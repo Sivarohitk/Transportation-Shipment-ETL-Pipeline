@@ -1,0 +1,7 @@
+﻿carrier_id,carrier_name,scac,service_mode,home_region_code,is_active,updated_at
+CAR001,Atlas Freight,ATLS,FTL,WEST,true,2026-01-01T00:00:00Z
+CAR002,Pioneer Logistics,PNLR,LTL,WEST,true,2026-01-01T00:00:00Z
+CAR003,MidStates Trucking,MSTR,FTL,MIDWEST,true,2026-01-01T00:00:00Z
+CAR004,Coastal Parcel,CPLX,PARCEL,NORTHEAST,true,2026-01-01T00:00:00Z
+CAR005,Sunbelt Express,,LTL,SOUTH,true,2026-01-01T00:00:00Z
+CAR006,Legacy Carrier,LGCY,FTL,,false,2025-12-15T00:00:00Z

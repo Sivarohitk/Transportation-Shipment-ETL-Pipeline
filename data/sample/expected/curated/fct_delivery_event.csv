@@ -1,0 +1,3 @@
+﻿event_id,shipment_id,carrier_id,event_type,event_ts,p_date,region_code
+EVT001,SHP001,CAR001,PICKED_UP,2026-01-01T08:15:00Z,2026-01-01,WEST
+EVT002,SHP001,CAR001,DELIVERED,2026-01-03T16:30:00Z,2026-01-03,SOUTH

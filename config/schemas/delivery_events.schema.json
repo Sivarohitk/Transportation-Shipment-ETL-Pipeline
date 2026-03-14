@@ -1,0 +1,50 @@
+﻿{
+  "entity": "delivery_events",
+  "source_format": "csv",
+  "primary_key": ["event_id"],
+  "required_columns": [
+    "event_id",
+    "shipment_id",
+    "event_type",
+    "event_ts",
+    "updated_at"
+  ],
+  "options": {
+    "header": "true",
+    "delimiter": ",",
+    "quote": "\"",
+    "escape": "\\",
+    "mode": "PERMISSIVE",
+    "timestamp_formats": [
+      "yyyy-MM-dd'T'HH:mm:ssX",
+      "yyyy-MM-dd HH:mm:ss"
+    ]
+  },
+  "columns": [
+    {"name": "event_id", "type": "string", "nullable": false, "trim": true, "uppercase": true},
+    {"name": "shipment_id", "type": "string", "nullable": false, "trim": true, "uppercase": true},
+    {
+      "name": "event_type",
+      "type": "string",
+      "nullable": false,
+      "trim": true,
+      "uppercase": true,
+      "allowed_values": [
+        "PICKED_UP",
+        "IN_TRANSIT",
+        "OUT_FOR_DELIVERY",
+        "DELIVERY_ATTEMPT",
+        "DELIVERED",
+        "DELAYED",
+        "EXCEPTION",
+        "HOLD"
+      ]
+    },
+    {"name": "event_ts", "type": "timestamp", "nullable": false},
+    {"name": "event_city", "type": "string", "nullable": true, "trim": true},
+    {"name": "event_state", "type": "string", "nullable": true, "trim": true, "uppercase": true, "length": 2},
+    {"name": "delay_reason", "type": "string", "nullable": true, "trim": true, "uppercase": true},
+    {"name": "attempt_number", "type": "int", "nullable": true, "min": 1},
+    {"name": "updated_at", "type": "timestamp", "nullable": false}
+  ]
+}

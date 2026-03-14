@@ -1,0 +1,37 @@
+﻿{
+  "entity": "shipments",
+  "source_format": "csv",
+  "primary_key": ["shipment_id"],
+  "required_columns": [
+    "shipment_id",
+    "carrier_id",
+    "origin_state",
+    "destination_state",
+    "pickup_ts",
+    "promised_delivery_ts",
+    "updated_at"
+  ],
+  "options": {
+    "header": "true",
+    "delimiter": ",",
+    "quote": "\"",
+    "escape": "\\",
+    "mode": "PERMISSIVE",
+    "timestamp_formats": [
+      "yyyy-MM-dd'T'HH:mm:ssX",
+      "yyyy-MM-dd HH:mm:ss"
+    ]
+  },
+  "columns": [
+    {"name": "shipment_id", "type": "string", "nullable": false, "trim": true, "uppercase": true},
+    {"name": "carrier_id", "type": "string", "nullable": false, "trim": true, "uppercase": true},
+    {"name": "origin_state", "type": "string", "nullable": false, "trim": true, "uppercase": true, "length": 2},
+    {"name": "destination_state", "type": "string", "nullable": false, "trim": true, "uppercase": true, "length": 2},
+    {"name": "pickup_ts", "type": "timestamp", "nullable": false},
+    {"name": "promised_delivery_ts", "type": "timestamp", "nullable": false},
+    {"name": "actual_delivery_ts", "type": "timestamp", "nullable": true},
+    {"name": "shipping_cost_usd", "type": "double", "nullable": true, "min": 0.0},
+    {"name": "distance_miles", "type": "double", "nullable": true, "min": 0.0},
+    {"name": "updated_at", "type": "timestamp", "nullable": false}
+  ]
+}

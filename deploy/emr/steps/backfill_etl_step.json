@@ -1,0 +1,14 @@
+[
+  {
+    "Name": "transport-etl-backfill-__START_DATE___to___END_DATE__",
+    "ActionOnFailure": "CONTINUE",
+    "HadoopJarStep": {
+      "Jar": "command-runner.jar",
+      "Args": [
+        "bash",
+        "-lc",
+        "PYTHONPATH=/opt/transport-etl/src spark-submit --master yarn --deploy-mode cluster /opt/transport-etl/src/transport_etl/main.py --job backfill --config /opt/transport-etl/config/prod.yaml --spark-profile emr --start-date __START_DATE__ --end-date __END_DATE__ --raw-base-path s3://__DATA_BUCKET__/transport/raw --reference-base-path s3://__DATA_BUCKET__/transport/reference --staging-base-path s3://__DATA_BUCKET__/transport/staging --curated-base-path s3://__DATA_BUCKET__/transport/curated --register-hive"
+      ]
+    }
+  }
+]

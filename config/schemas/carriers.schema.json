@@ -1,0 +1,38 @@
+﻿{
+  "entity": "carriers",
+  "source_format": "csv",
+  "primary_key": ["carrier_id"],
+  "required_columns": [
+    "carrier_id",
+    "carrier_name",
+    "service_mode",
+    "updated_at"
+  ],
+  "options": {
+    "header": "true",
+    "delimiter": ",",
+    "quote": "\"",
+    "escape": "\\",
+    "mode": "PERMISSIVE",
+    "timestamp_formats": [
+      "yyyy-MM-dd'T'HH:mm:ssX",
+      "yyyy-MM-dd HH:mm:ss"
+    ]
+  },
+  "columns": [
+    {"name": "carrier_id", "type": "string", "nullable": false, "trim": true, "uppercase": true},
+    {"name": "carrier_name", "type": "string", "nullable": false, "trim": true},
+    {"name": "scac", "type": "string", "nullable": true, "trim": true, "uppercase": true, "length": 4},
+    {
+      "name": "service_mode",
+      "type": "string",
+      "nullable": false,
+      "trim": true,
+      "uppercase": true,
+      "allowed_values": ["FTL", "LTL", "PARCEL"]
+    },
+    {"name": "home_region_code", "type": "string", "nullable": true, "trim": true, "uppercase": true},
+    {"name": "is_active", "type": "boolean", "nullable": true},
+    {"name": "updated_at", "type": "timestamp", "nullable": false}
+  ]
+}

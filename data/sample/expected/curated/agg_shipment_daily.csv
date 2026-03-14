@@ -1,0 +1,3 @@
+﻿p_date,region_code,carrier_id,total_shipments,late_shipments,total_cost_usd,total_distance_miles
+2026-01-01,SOUTH,CAR001,1,0,1250.0,1420.5
+2026-01-01,WEST,CAR002,1,1,860.25,980.2

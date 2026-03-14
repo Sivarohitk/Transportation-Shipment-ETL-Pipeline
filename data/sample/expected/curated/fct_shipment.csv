@@ -1,0 +1,3 @@
+﻿shipment_id,carrier_id,origin_state,destination_state,shipping_cost_usd,distance_miles,is_late,p_date,region_code
+SHP001,CAR001,CA,TX,1250.0,1420.5,false,2026-01-01,SOUTH
+SHP002,CAR002,WA,AZ,860.25,980.2,true,2026-01-01,WEST

@@ -1,0 +1,63 @@
+﻿app:
+  name: transport-shipment-etl
+  env: base
+  timezone: UTC
+
+runtime:
+  default_write_mode: overwrite
+  fail_fast: true
+
+paths:
+  raw_base_path: data/sample/raw
+  staging_base_path: data/local/staging
+  curated_base_path: data/local/curated
+  audit_base_path: data/local/logs
+  reference_base_path: data/sample/reference
+
+spark:
+  profile: local
+  app_name: transport-shipment-etl
+  enable_hive_support: true
+  conf:
+    spark.sql.session.timeZone: UTC
+    spark.sql.adaptive.enabled: "true"
+    spark.sql.sources.partitionOverwriteMode: dynamic
+    spark.sql.parquet.compression.codec: snappy
+    spark.sql.shuffle.partitions: "8"
+
+io:
+  csv:
+    header: "true"
+    inferSchema: "false"
+    mode: PERMISSIVE
+    timestampFormat: "yyyy-MM-dd'T'HH:mm:ssX"
+  parquet:
+    compression: snappy
+  invalid_records:
+    format: parquet
+    windows_local_fallback_enabled: false
+    windows_local_fallback_format: json
+  curated_outputs:
+    format: parquet
+    windows_local_fallback_enabled: false
+    windows_local_fallback_format: json
+
+hive:
+  database: curated
+  mode: overwrite
+
+partitioning:
+  keys:
+    - p_date
+    - region_code
+    - carrier_id
+
+logging:
+  level: INFO
+  logger_name: transport_etl
+  json: false
+
+quality:
+  fail_on_schema_drift: true
+  fail_on_duplicate_primary_keys: true
+  fail_on_required_nulls: true

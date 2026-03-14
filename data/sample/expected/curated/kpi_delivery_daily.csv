@@ -1,0 +1,3 @@
+﻿p_date,region_code,carrier_id,on_time_delivery_rate,late_delivery_rate,avg_cost_per_mile
+2026-01-01,SOUTH,CAR001,1.0,0.0,0.88
+2026-01-01,WEST,CAR002,0.0,1.0,0.88

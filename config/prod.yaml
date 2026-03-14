@@ -1,0 +1,25 @@
+﻿app:
+  env: prod
+
+runtime:
+  fail_fast: true
+
+spark:
+  profile: emr
+  app_name: transport-shipment-etl-prod
+  enable_hive_support: true
+  conf:
+    spark.sql.shuffle.partitions: "200"
+    spark.dynamicAllocation.enabled: "true"
+    spark.serializer: org.apache.spark.serializer.KryoSerializer
+
+paths:
+  raw_base_path: s3://your-bucket/transport/raw
+  staging_base_path: s3://your-bucket/transport/staging
+  curated_base_path: s3://your-bucket/transport/curated
+  audit_base_path: s3://your-bucket/transport/logs
+  reference_base_path: s3://your-bucket/transport/reference
+
+logging:
+  level: INFO
+  json: true

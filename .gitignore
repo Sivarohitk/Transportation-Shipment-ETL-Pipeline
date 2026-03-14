@@ -1,0 +1,41 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+
+# Tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local data outputs (keep gitkeep files)
+data/local/raw/*
+!data/local/raw/.gitkeep
+data/local/staging/*
+!data/local/staging/.gitkeep
+data/local/curated/*
+!data/local/curated/.gitkeep
+data/local/logs/*
+!data/local/logs/.gitkeep
+
+# Spark / Hive scratch
+metastore_db/
+spark-warehouse/
+*.log
