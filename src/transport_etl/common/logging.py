@@ -56,9 +56,7 @@ def _configure_fallback_logging(level: str = DEFAULT_LOG_LEVEL, json_logs: bool 
     if json_logs:
         handler.setFormatter(JsonFormatter())
     else:
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s %(levelname)s %(name)s - %(message)s")
-        )
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s - %(message)s"))
 
     root_logger.addHandler(handler)
 

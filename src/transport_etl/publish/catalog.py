@@ -43,7 +43,9 @@ def _spark_type_to_sql(data_type: Any) -> str:
     return raw.upper()
 
 
-def ensure_curated_database(spark: Any, database: str = "curated", location: str | None = None) -> None:
+def ensure_curated_database(
+    spark: Any, database: str = "curated", location: str | None = None
+) -> None:
     """Ensure curated Hive database exists."""
     if not _supports_spark(spark):
         return
@@ -80,7 +82,9 @@ def register_parquet_table(
     ensure_curated_database(spark=spark, database=database)
 
     fields = getattr(schema, "fields", []) if schema is not None else []
-    non_partition_fields = [field for field in fields if getattr(field, "name", None) not in partitions]
+    non_partition_fields = [
+        field for field in fields if getattr(field, "name", None) not in partitions
+    ]
 
     if not non_partition_fields:
         raise ValueError("Cannot register table without non-partition fields")

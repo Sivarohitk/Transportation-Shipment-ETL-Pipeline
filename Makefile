@@ -1,28 +1,30 @@
-﻿PYTHON ?= python
-PIP ?= pip
-SRC_DIR := src
+PYTHON ?= python
 
-.PHONY: install install-dev run-local test lint format clean
+.PHONY: install install-dev run-local run-backfill test lint format clean
 
 install:
-	$(PIP) install -r requirements.txt
-	$(PIP) install -e .
+	$(PYTHON) -m pip install -r requirements.txt
+	$(PYTHON) -m pip install -e .
 
 install-dev:
-	$(PIP) install -r requirements-dev.txt
-	$(PIP) install -e .[dev]
+	$(PYTHON) -m pip install -r requirements-dev.txt
+	$(PYTHON) -m pip install -e .
 
 run-local:
-	$(PYTHON) -m transport_etl.main --job daily --config config/dev.yaml --run-date 2026-01-01 --no-register-hive
+	$(PYTHON) -m transport_etl.main --job daily --config dev --run-date 2026-01-01
+
+run-backfill:
+	$(PYTHON) -m transport_etl.main --job backfill --config dev --start-date 2026-01-01 --end-date 2026-01-02
 
 test:
-	pytest -q
+	$(PYTHON) -m pytest -q
 
 lint:
-	ruff check $(SRC_DIR) tests
+	$(PYTHON) -m ruff check .
+	$(PYTHON) -m black --check .
 
 format:
-	black $(SRC_DIR) tests
+	$(PYTHON) -m black .
 
 clean:
 	powershell -NoProfile -Command "Get-ChildItem -Recurse -Directory -Filter __pycache__ | Remove-Item -Recurse -Force"

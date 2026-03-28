@@ -204,7 +204,9 @@ def _write_python_json_fallback(
 
     for key, partition_rows in grouped_rows.items():
         target_dir = (
-            _partitioned_destination_dir(destination, partitions, key) if partitions else ensure_local_dir(destination)
+            _partitioned_destination_dir(destination, partitions, key)
+            if partitions
+            else ensure_local_dir(destination)
         )
         target_path = Path(target_dir) / (
             f"part-{datetime.now(tz=timezone.utc).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex}.jsonl"
@@ -244,7 +246,9 @@ def _write_python_csv_fallback(
 
     for key, partition_rows in grouped_rows.items():
         target_dir = (
-            _partitioned_destination_dir(destination, partitions, key) if partitions else ensure_local_dir(destination)
+            _partitioned_destination_dir(destination, partitions, key)
+            if partitions
+            else ensure_local_dir(destination)
         )
         target_path = Path(target_dir) / (
             f"part-{datetime.now(tz=timezone.utc).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex}.csv"
@@ -297,7 +301,9 @@ def write_invalid_records_with_fallback(
         )
         return primary_format
     except Exception as exc:
-        if not _supports_windows_local_fallback(destination=destination, exc=exc, write_config=config):
+        if not _supports_windows_local_fallback(
+            destination=destination, exc=exc, write_config=config
+        ):
             raise
 
         fallback_format = _normalize_format(
@@ -318,9 +324,13 @@ def write_invalid_records_with_fallback(
 
         try:
             if fallback_format == "json":
-                _write_python_json_fallback(df=df, destination=fallback_destination, mode=mode, partition_by=None)
+                _write_python_json_fallback(
+                    df=df, destination=fallback_destination, mode=mode, partition_by=None
+                )
             else:
-                _write_python_csv_fallback(df=df, destination=fallback_destination, mode=mode, partition_by=None)
+                _write_python_csv_fallback(
+                    df=df, destination=fallback_destination, mode=mode, partition_by=None
+                )
             return fallback_format
         except Exception as fallback_exc:
             if logger is not None:

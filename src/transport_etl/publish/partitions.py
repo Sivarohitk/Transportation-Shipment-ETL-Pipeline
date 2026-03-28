@@ -17,7 +17,6 @@ from transport_etl.common.constants import (
     PARTITION_COL_REGION,
 )
 
-
 PARTITION_COLUMNS = [PARTITION_COL_DATE, PARTITION_COL_REGION, PARTITION_COL_CARRIER]
 DEFAULT_PARTITION_VALUES: dict[str, Any] = {
     PARTITION_COL_DATE: "1970-01-01",
@@ -61,7 +60,9 @@ def _derive_partition_date(df: DataFrame) -> Any:
     expressions = [F.to_date(F.col(column)) for column in candidate_columns if column in df.columns]
 
     if expressions:
-        return F.coalesce(*expressions, F.to_date(F.lit(DEFAULT_PARTITION_VALUES[PARTITION_COL_DATE])))
+        return F.coalesce(
+            *expressions, F.to_date(F.lit(DEFAULT_PARTITION_VALUES[PARTITION_COL_DATE]))
+        )
 
     return F.to_date(F.lit(DEFAULT_PARTITION_VALUES[PARTITION_COL_DATE]))
 
@@ -86,7 +87,9 @@ def ensure_partition_columns(
 
     if PARTITION_COL_REGION in target:
         if PARTITION_COL_REGION not in result.columns:
-            result = result.withColumn(PARTITION_COL_REGION, F.lit(fill_values[PARTITION_COL_REGION]))
+            result = result.withColumn(
+                PARTITION_COL_REGION, F.lit(fill_values[PARTITION_COL_REGION])
+            )
         result = result.withColumn(
             PARTITION_COL_REGION,
             F.coalesce(F.col(PARTITION_COL_REGION), F.lit(fill_values[PARTITION_COL_REGION])),
@@ -94,7 +97,9 @@ def ensure_partition_columns(
 
     if PARTITION_COL_CARRIER in target:
         if PARTITION_COL_CARRIER not in result.columns:
-            result = result.withColumn(PARTITION_COL_CARRIER, F.lit(fill_values[PARTITION_COL_CARRIER]))
+            result = result.withColumn(
+                PARTITION_COL_CARRIER, F.lit(fill_values[PARTITION_COL_CARRIER])
+            )
         result = result.withColumn(
             PARTITION_COL_CARRIER,
             F.coalesce(F.col(PARTITION_COL_CARRIER), F.lit(fill_values[PARTITION_COL_CARRIER])),

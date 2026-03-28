@@ -65,7 +65,9 @@ def _resolve_named_config(name: str, config_dir: Path) -> Path:
     return Path(name)
 
 
-def resolve_config_path(config_path: str | Path | None = None, config_dir: str | Path = CONFIG_DIR) -> Path:
+def resolve_config_path(
+    config_path: str | Path | None = None, config_dir: str | Path = CONFIG_DIR
+) -> Path:
     """Resolve user-provided config path to an absolute path.
 
     If no path is provided, this defaults to `config/dev.yaml`.
@@ -88,7 +90,9 @@ def resolve_config_path(config_path: str | Path | None = None, config_dir: str |
     return path
 
 
-def load_config(config_path: str | Path | None = None, config_dir: str | Path = CONFIG_DIR) -> dict[str, Any]:
+def load_config(
+    config_path: str | Path | None = None, config_dir: str | Path = CONFIG_DIR
+) -> dict[str, Any]:
     """Load and merge base config with env-specific overrides.
 
     Behavior:

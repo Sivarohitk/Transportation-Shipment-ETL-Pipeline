@@ -24,9 +24,10 @@ from transport_etl.common.io import (
     write_invalid_records_with_fallback,
 )
 
-
 LOGGER = logging.getLogger(__name__)
-_SCHEMA_PATH = Path(__file__).resolve().parents[3] / "config" / "schemas" / "delivery_events.schema.json"
+_SCHEMA_PATH = (
+    Path(__file__).resolve().parents[3] / "config" / "schemas" / "delivery_events.schema.json"
+)
 _CORRUPT_COL = "_corrupt_record"
 
 
@@ -36,7 +37,9 @@ def _require_spark() -> None:
         raise ImportError("pyspark is required for delivery-event ingestion")
 
 
-def load_delivery_events_schema_definition(schema_path: str | Path = _SCHEMA_PATH) -> dict[str, Any]:
+def load_delivery_events_schema_definition(
+    schema_path: str | Path = _SCHEMA_PATH,
+) -> dict[str, Any]:
     """Load the delivery events schema definition JSON."""
     path = Path(schema_path)
     if not path.exists():
@@ -241,13 +244,15 @@ def _validation_errors(df: DataFrame, schema_def: Mapping[str, Any]) -> list[Any
 
     errors.append(
         F.when(
-            F.col("event_type").isin("DELIVERY_ATTEMPT", "DELIVERED") & F.col("attempt_number").isNull(),
+            F.col("event_type").isin("DELIVERY_ATTEMPT", "DELIVERED")
+            & F.col("attempt_number").isNull(),
             F.lit("missing_required:attempt_number_for_delivery_event"),
         )
     )
     errors.append(
         F.when(
-            F.col("event_type").isin("DELAYED", "EXCEPTION", "HOLD") & F.col("delay_reason").isNull(),
+            F.col("event_type").isin("DELAYED", "EXCEPTION", "HOLD")
+            & F.col("delay_reason").isNull(),
             F.lit("missing_required:delay_reason_for_delay_or_exception"),
         )
     )
@@ -373,4 +378,3 @@ def read_delivery_events_raw(
 
     LOGGER.info("Delivery event ingestion completed for source_path=%s", source_path)
     return valid_df
-

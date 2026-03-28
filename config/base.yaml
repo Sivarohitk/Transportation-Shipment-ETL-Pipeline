@@ -45,6 +45,8 @@ io:
 hive:
   database: curated
   mode: overwrite
+  register_tables: true
+  repair_partitions: true
 
 partitioning:
   keys:

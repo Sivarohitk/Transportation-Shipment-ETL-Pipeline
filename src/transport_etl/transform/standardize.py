@@ -106,7 +106,9 @@ def clean_text_columns(df: DataFrame, columns: list[str] | None = None) -> DataF
         cleaned = F.regexp_replace(F.col(column), r"[\x00-\x1F\x7F]", " ")
         cleaned = F.regexp_replace(cleaned, r"\s+", " ")
         cleaned = F.trim(cleaned)
-        result = result.withColumn(column, F.when(F.length(cleaned) == 0, F.lit(None)).otherwise(cleaned))
+        result = result.withColumn(
+            column, F.when(F.length(cleaned) == 0, F.lit(None)).otherwise(cleaned)
+        )
 
     return result
 
@@ -169,12 +171,16 @@ def standardize_status_values(df: DataFrame, status_column: str = "status") -> D
     )
 
 
-def standardize_event_type_values(df: DataFrame, event_type_column: str = "event_type") -> DataFrame:
+def standardize_event_type_values(
+    df: DataFrame, event_type_column: str = "event_type"
+) -> DataFrame:
     """Standardize event-type values using the status canonicalization map."""
     return standardize_status_values(df=df, status_column=event_type_column)
 
 
-def standardize_carrier_names(df: DataFrame, carrier_name_column: str = "carrier_name") -> DataFrame:
+def standardize_carrier_names(
+    df: DataFrame, carrier_name_column: str = "carrier_name"
+) -> DataFrame:
     """Normalize carrier-name text formatting.
 
     Carrier names keep original business casing by default; this only enforces

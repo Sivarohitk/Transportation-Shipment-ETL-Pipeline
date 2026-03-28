@@ -72,7 +72,9 @@ def test_build_kpi_delivery_daily_matches_formulae(curated_frames: dict[str, obj
 
     expected = (
         agg_df.join(event_rollup, on=["p_date", "region_code", "carrier_id"], how="left")
-        .withColumn("delivered_event_shipments", F.coalesce(F.col("delivered_event_shipments"), F.lit(0)))
+        .withColumn(
+            "delivered_event_shipments", F.coalesce(F.col("delivered_event_shipments"), F.lit(0))
+        )
         .withColumn(
             "first_attempt_success_shipments",
             F.coalesce(F.col("first_attempt_success_shipments"), F.lit(0)),
@@ -84,28 +86,46 @@ def test_build_kpi_delivery_daily_matches_formulae(curated_frames: dict[str, obj
         )
         .withColumn(
             "exp_on_time_delivery_rate",
-            F.when(F.col("delivered_denominator") > 0, F.col("on_time_shipments") / F.col("delivered_denominator")).otherwise(F.lit(0.0)),
+            F.when(
+                F.col("delivered_denominator") > 0,
+                F.col("on_time_shipments") / F.col("delivered_denominator"),
+            ).otherwise(F.lit(0.0)),
         )
         .withColumn(
             "exp_late_delivery_rate",
-            F.when(F.col("delivered_denominator") > 0, F.col("delayed_shipments") / F.col("delivered_denominator")).otherwise(F.lit(0.0)),
+            F.when(
+                F.col("delivered_denominator") > 0,
+                F.col("delayed_shipments") / F.col("delivered_denominator"),
+            ).otherwise(F.lit(0.0)),
         )
         .withColumn(
             "exp_first_attempt_success_rate",
-            F.when(F.col("delivered_denominator") > 0, F.col("first_attempt_success_shipments") / F.col("delivered_denominator")).otherwise(F.lit(0.0)),
+            F.when(
+                F.col("delivered_denominator") > 0,
+                F.col("first_attempt_success_shipments") / F.col("delivered_denominator"),
+            ).otherwise(F.lit(0.0)),
         )
         .withColumn(
             "exp_exception_rate",
-            F.when(F.col("total_shipments") > 0, F.col("exception_shipments") / F.col("total_shipments")).otherwise(F.lit(0.0)),
+            F.when(
+                F.col("total_shipments") > 0,
+                F.col("exception_shipments") / F.col("total_shipments"),
+            ).otherwise(F.lit(0.0)),
         )
         .withColumn(
             "exp_avg_cost_per_mile",
-            F.when(F.col("total_distance_miles") > 0, F.col("total_shipping_cost_usd") / F.col("total_distance_miles")).otherwise(F.lit(0.0)),
+            F.when(
+                F.col("total_distance_miles") > 0,
+                F.col("total_shipping_cost_usd") / F.col("total_distance_miles"),
+            ).otherwise(F.lit(0.0)),
         )
         .withColumn("exp_volume_by_carrier", F.col("total_shipments"))
         .withColumn(
             "exp_delivery_event_density",
-            F.when(F.col("total_shipments") > 0, F.col("total_delivery_events") / F.col("total_shipments")).otherwise(F.lit(0.0)),
+            F.when(
+                F.col("total_shipments") > 0,
+                F.col("total_delivery_events") / F.col("total_shipments"),
+            ).otherwise(F.lit(0.0)),
         )
     )
 
@@ -127,8 +147,7 @@ def test_build_kpi_delivery_daily_matches_formulae(curated_frames: dict[str, obj
     ]
 
     for actual_col, expected_col in metrics:
-        max_abs_diff = (
-            joined.select(F.max(F.abs(F.col(f"k.{actual_col}") - F.col(f"e.{expected_col}"))).alias("d"))
-            .collect()[0]["d"]
-        )
+        max_abs_diff = joined.select(
+            F.max(F.abs(F.col(f"k.{actual_col}") - F.col(f"e.{expected_col}"))).alias("d")
+        ).collect()[0]["d"]
         assert (max_abs_diff or 0.0) < 1e-9

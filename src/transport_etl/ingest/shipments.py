@@ -24,7 +24,6 @@ from transport_etl.common.io import (
     write_invalid_records_with_fallback,
 )
 
-
 LOGGER = logging.getLogger(__name__)
 _SCHEMA_PATH = Path(__file__).resolve().parents[3] / "config" / "schemas" / "shipments.schema.json"
 _CORRUPT_COL = "_corrupt_record"
@@ -369,4 +368,3 @@ def read_shipments_raw(
 
     LOGGER.info("Shipment ingestion completed for source_path=%s", source_path)
     return valid_df
-

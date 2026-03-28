@@ -13,16 +13,28 @@ def build_parser() -> argparse.ArgumentParser:
     """Build command-line parser for ETL job dispatch."""
     parser = argparse.ArgumentParser(description="Transportation Shipment ETL")
     parser.add_argument("--job", choices=["daily", "backfill"], default="daily")
-    parser.add_argument("--config", default="config/dev.yaml", help="Path to YAML config")
+    parser.add_argument(
+        "--config",
+        default="dev",
+        help="Config path or shorthand name (base, dev, prod)",
+    )
     parser.add_argument("--run-date", default=None, help="Daily run date in YYYY-MM-DD")
     parser.add_argument("--start-date", default=None, help="Backfill start date in YYYY-MM-DD")
     parser.add_argument("--end-date", default=None, help="Backfill end date in YYYY-MM-DD")
 
     parser.add_argument("--raw-base-path", default=None, help="Override paths.raw_base_path")
-    parser.add_argument("--reference-base-path", default=None, help="Override paths.reference_base_path")
-    parser.add_argument("--staging-base-path", default=None, help="Override paths.staging_base_path")
-    parser.add_argument("--curated-base-path", default=None, help="Override paths.curated_base_path")
-    parser.add_argument("--spark-profile", choices=["local", "emr"], default=None, help="Override spark.profile")
+    parser.add_argument(
+        "--reference-base-path", default=None, help="Override paths.reference_base_path"
+    )
+    parser.add_argument(
+        "--staging-base-path", default=None, help="Override paths.staging_base_path"
+    )
+    parser.add_argument(
+        "--curated-base-path", default=None, help="Override paths.curated_base_path"
+    )
+    parser.add_argument(
+        "--spark-profile", choices=["local", "emr"], default=None, help="Override spark.profile"
+    )
     parser.add_argument("--hive-database", default=None, help="Override hive.database")
     parser.add_argument(
         "--fail-fast",

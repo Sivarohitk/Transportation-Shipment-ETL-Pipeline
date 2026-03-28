@@ -78,7 +78,11 @@ def sample_paths(project_root: Path) -> dict[str, Path]:
     return {
         "raw_shipments": project_root / "data" / "sample" / "raw" / "shipments_2026-01-01.csv",
         "raw_carriers": project_root / "data" / "sample" / "raw" / "carriers_2026-01-01.csv",
-        "raw_delivery_events": project_root / "data" / "sample" / "raw" / "delivery_events_2026-01-01.csv",
+        "raw_delivery_events": project_root
+        / "data"
+        / "sample"
+        / "raw"
+        / "delivery_events_2026-01-01.csv",
         "region_lookup": project_root / "data" / "sample" / "reference" / "region_lookup.csv",
     }
 

@@ -19,8 +19,10 @@ except ModuleNotFoundError:  # pragma: no cover - allows non-Spark unit tests
     Window = None  # type: ignore[assignment]
 
 from transport_etl.common.io import read_csv
-from transport_etl.transform.standardize import normalize_region_code_values, normalize_state_code_values
-
+from transport_etl.transform.standardize import (
+    normalize_region_code_values,
+    normalize_state_code_values,
+)
 
 LOGGER = logging.getLogger(__name__)
 DEFAULT_REGION_LOOKUP_PATH = str(

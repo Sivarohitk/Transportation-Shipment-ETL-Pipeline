@@ -45,12 +45,7 @@ def test_load_config_expands_environment_variables(
         encoding="utf-8",
     )
     (config_dir / "dev.yaml").write_text(
-        (
-            "app:\n"
-            "  env: dev\n"
-            "runtime:\n"
-            "  fail_fast: false\n"
-        ),
+        ("app:\n" "  env: dev\n" "runtime:\n" "  fail_fast: false\n"),
         encoding="utf-8",
     )
 

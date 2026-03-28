@@ -50,10 +50,7 @@ def _empty_like(df: DataFrame, extra_columns: list[str] | None = None) -> DataFr
 def _label_invalid_rows(df: DataFrame, rule_name: str, reason_expr: Any) -> DataFrame:
     """Attach standardized rule metadata columns to invalid rows."""
     _require_spark()
-    return (
-        df.withColumn("__rule_name", F.lit(rule_name))
-        .withColumn("__rule_reason", reason_expr)
-    )
+    return df.withColumn("__rule_name", F.lit(rule_name)).withColumn("__rule_reason", reason_expr)
 
 
 def validate_allowed_values(
@@ -320,7 +317,11 @@ def run_quality_rules(context: dict[str, Any]) -> dict[str, Any]:
 
     clean_df = df
     primary_key = context.get("primary_key")
-    if invalid_frames and isinstance(primary_key, list) and all(col in df.columns for col in primary_key):
+    if (
+        invalid_frames
+        and isinstance(primary_key, list)
+        and all(col in df.columns for col in primary_key)
+    ):
         invalid_keys = invalid_df.select(*primary_key).dropna().dropDuplicates()
         clean_df = df.join(invalid_keys, on=primary_key, how="left_anti")
 

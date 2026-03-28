@@ -13,7 +13,10 @@ except ModuleNotFoundError:  # pragma: no cover
     F = None  # type: ignore[assignment]
     Window = None  # type: ignore[assignment]
 
-from transport_etl.transform.standardize import normalize_region_code_values, standardize_carrier_names
+from transport_etl.transform.standardize import (
+    normalize_region_code_values,
+    standardize_carrier_names,
+)
 
 
 def _supports_spark(df: Any) -> bool:
@@ -28,9 +31,7 @@ def _deduplicate_carriers(df: DataFrame) -> DataFrame:
         F.col("carrier_name").asc_nulls_last(),
     )
     return (
-        df.withColumn("__rn", F.row_number().over(window))
-        .filter(F.col("__rn") == 1)
-        .drop("__rn")
+        df.withColumn("__rn", F.row_number().over(window)).filter(F.col("__rn") == 1).drop("__rn")
     )
 
 
@@ -56,7 +57,9 @@ def build_dim_carrier(stg_carriers_df: Any, run_date: str | None) -> Any:
         return stg_carriers_df
 
     base = standardize_carrier_names(stg_carriers_df, carrier_name_column="carrier_name")
-    region_columns = [column for column in ["home_region_code", "region_code"] if column in base.columns]
+    region_columns = [
+        column for column in ["home_region_code", "region_code"] if column in base.columns
+    ]
     if region_columns:
         base = normalize_region_code_values(base, columns=region_columns)
 

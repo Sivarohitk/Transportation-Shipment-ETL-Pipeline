@@ -143,7 +143,9 @@ def filter_rows_with_required_nulls(df: DataFrame, required_columns: list[str]) 
     )
 
 
-def split_by_required_nulls(df: DataFrame, required_columns: list[str]) -> tuple[DataFrame, DataFrame]:
+def split_by_required_nulls(
+    df: DataFrame, required_columns: list[str]
+) -> tuple[DataFrame, DataFrame]:
     """Split input into valid and invalid (null violating) records."""
     _require_spark()
     invalid_df = filter_rows_with_required_nulls(df=df, required_columns=required_columns)

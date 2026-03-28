@@ -48,12 +48,7 @@ def test_build_fct_shipment_outputs_kpi_ready_columns(
     }
     assert required_columns.issubset(set(fct_df.columns))
 
-    duplicate_count = (
-        fct_df.groupBy("shipment_id")
-        .count()
-        .filter(F.col("count") > 1)
-        .count()
-    )
+    duplicate_count = fct_df.groupBy("shipment_id").count().filter(F.col("count") > 1).count()
     assert duplicate_count == 0
 
     shp1002 = (
@@ -66,8 +61,6 @@ def test_build_fct_shipment_outputs_kpi_ready_columns(
     assert shp1002["region_code"] == "WEST"
 
     shp1006 = (
-        fct_df.filter(F.col("shipment_id") == "SHP1006")
-        .select("shipping_cost_usd")
-        .collect()[0]
+        fct_df.filter(F.col("shipment_id") == "SHP1006").select("shipping_cost_usd").collect()[0]
     )
     assert shp1006["shipping_cost_usd"] == pytest.approx(415.0, rel=1e-9)

@@ -55,9 +55,7 @@ def test_split_by_duplicates_keeps_latest_record_per_key(spark) -> None:
     )
 
     kept_payload = (
-        deduped_df.filter(F.col("shipment_id") == "SHP1")
-        .select("payload")
-        .collect()[0]["payload"]
+        deduped_df.filter(F.col("shipment_id") == "SHP1").select("payload").collect()[0]["payload"]
     )
 
     assert deduped_df.count() == 2

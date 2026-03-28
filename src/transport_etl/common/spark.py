@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -139,6 +141,12 @@ def create_spark_session(
         spark_profile_dir=spark_profile_dir,
     )
 
+    if profile == SPARK_PROFILE_LOCAL:
+        os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
+        os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
+        spark_conf.setdefault("spark.pyspark.python", sys.executable)
+        spark_conf.setdefault("spark.executorEnv.PYSPARK_PYTHON", sys.executable)
+
     builder = SparkSession.builder.appName(app_name)
     for key, value in spark_conf.items():
         builder = builder.config(key, value)
@@ -169,7 +177,12 @@ def create_spark_session_from_config(
         app_name=selected_app_name,
         profile=selected_profile,
         enable_hive_support=hive_enabled,
-        conf={**_normalize_conf(spark_section.get("conf") if isinstance(spark_section, Mapping) else {}), **combined_extra},
+        conf={
+            **_normalize_conf(
+                spark_section.get("conf") if isinstance(spark_section, Mapping) else {}
+            ),
+            **combined_extra,
+        },
     )
 
 

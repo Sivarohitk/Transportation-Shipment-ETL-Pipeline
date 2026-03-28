@@ -12,6 +12,7 @@ spark:
     spark.master: local[*]
     spark.sql.shuffle.partitions: "4"
     spark.ui.enabled: "false"
+    spark.ui.showConsoleProgress: "false"
 
 paths:
   raw_base_path: data/sample/raw
@@ -31,3 +32,7 @@ io:
   curated_outputs:
     windows_local_fallback_enabled: true
     windows_local_fallback_format: json
+
+hive:
+  register_tables: false
+  repair_partitions: false

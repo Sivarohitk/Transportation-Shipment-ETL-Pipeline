@@ -29,15 +29,15 @@ def _deduplicate_shipments(df: DataFrame) -> DataFrame:
         F.col("pickup_ts").desc_nulls_last(),
     )
     return (
-        df.withColumn("__rn", F.row_number().over(window))
-        .filter(F.col("__rn") == 1)
-        .drop("__rn")
+        df.withColumn("__rn", F.row_number().over(window)).filter(F.col("__rn") == 1).drop("__rn")
     )
 
 
 def _delay_minutes_expr(actual_col: str, promised_col: str) -> Any:
     """Compute positive delay minutes from actual vs promised timestamps."""
-    diff_minutes = (F.unix_timestamp(F.col(actual_col)) - F.unix_timestamp(F.col(promised_col))) / F.lit(60.0)
+    diff_minutes = (
+        F.unix_timestamp(F.col(actual_col)) - F.unix_timestamp(F.col(promised_col))
+    ) / F.lit(60.0)
     return F.when(
         F.col(actual_col).isNotNull() & F.col(promised_col).isNotNull(),
         F.greatest(diff_minutes, F.lit(0.0)),
@@ -46,7 +46,9 @@ def _delay_minutes_expr(actual_col: str, promised_col: str) -> Any:
 
 def _transit_time_hours_expr(actual_col: str, pickup_col: str) -> Any:
     """Compute transit duration hours from pickup to delivery."""
-    diff_hours = (F.unix_timestamp(F.col(actual_col)) - F.unix_timestamp(F.col(pickup_col))) / F.lit(3600.0)
+    diff_hours = (
+        F.unix_timestamp(F.col(actual_col)) - F.unix_timestamp(F.col(pickup_col))
+    ) / F.lit(3600.0)
     return F.when(
         F.col(actual_col).isNotNull() & F.col(pickup_col).isNotNull(),
         diff_hours,
@@ -91,7 +93,10 @@ def build_fct_shipment(stg_shipments_df: Any, region_lookup_df: Any) -> Any:
         )
 
     result = (
-        enriched.withColumn("delivered_flag", F.when(F.col("actual_delivery_ts").isNotNull(), F.lit(1)).otherwise(F.lit(0)))
+        enriched.withColumn(
+            "delivered_flag",
+            F.when(F.col("actual_delivery_ts").isNotNull(), F.lit(1)).otherwise(F.lit(0)),
+        )
         .withColumn(
             "on_time_delivery_flag",
             F.when(
@@ -101,7 +106,9 @@ def build_fct_shipment(stg_shipments_df: Any, region_lookup_df: Any) -> Any:
                 F.lit(1),
             ).otherwise(F.lit(0)),
         )
-        .withColumn("delay_minutes", _delay_minutes_expr("actual_delivery_ts", "promised_delivery_ts"))
+        .withColumn(
+            "delay_minutes", _delay_minutes_expr("actual_delivery_ts", "promised_delivery_ts")
+        )
         .withColumn(
             "exception_flag",
             F.when(F.col("destination_state").isNull(), F.lit(1))
@@ -114,7 +121,9 @@ def build_fct_shipment(stg_shipments_df: Any, region_lookup_df: Any) -> Any:
             )
             .otherwise(F.lit(0)),
         )
-        .withColumn("transit_time_hours", _transit_time_hours_expr("actual_delivery_ts", "pickup_ts"))
+        .withColumn(
+            "transit_time_hours", _transit_time_hours_expr("actual_delivery_ts", "pickup_ts")
+        )
         .withColumn(
             "p_date",
             F.coalesce(

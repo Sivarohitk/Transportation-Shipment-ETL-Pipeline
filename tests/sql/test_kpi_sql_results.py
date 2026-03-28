@@ -62,8 +62,7 @@ def test_kpi_sql_matches_python_builder(
     assert joined.count() == python_kpi_df.count()
 
     for metric in metrics:
-        max_abs_diff = (
-            joined.select(F.max(F.abs(F.col(f"s.{metric}") - F.col(f"p.{metric}"))).alias("d"))
-            .collect()[0]["d"]
-        )
+        max_abs_diff = joined.select(
+            F.max(F.abs(F.col(f"s.{metric}") - F.col(f"p.{metric}"))).alias("d")
+        ).collect()[0]["d"]
         assert (max_abs_diff or 0.0) < 1e-9

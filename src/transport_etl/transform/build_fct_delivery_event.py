@@ -13,7 +13,10 @@ except ModuleNotFoundError:  # pragma: no cover
     F = None  # type: ignore[assignment]
     Window = None  # type: ignore[assignment]
 
-from transport_etl.transform.enrich_region import enrich_delivery_events_with_region, enrich_shipments_with_region
+from transport_etl.transform.enrich_region import (
+    enrich_delivery_events_with_region,
+    enrich_shipments_with_region,
+)
 from transport_etl.transform.standardize import standardize_columns
 
 
@@ -33,15 +36,15 @@ def _deduplicate_by_key(df: DataFrame, key_column: str) -> DataFrame:
 
     window = Window.partitionBy(key_column).orderBy(*order_exprs)
     return (
-        df.withColumn("__rn", F.row_number().over(window))
-        .filter(F.col("__rn") == 1)
-        .drop("__rn")
+        df.withColumn("__rn", F.row_number().over(window)).filter(F.col("__rn") == 1).drop("__rn")
     )
 
 
 def _delay_minutes_expr(event_ts_col: str, promised_col: str) -> Any:
     """Compute positive delay minutes for event timestamp vs promised timestamp."""
-    diff_minutes = (F.unix_timestamp(F.col(event_ts_col)) - F.unix_timestamp(F.col(promised_col))) / F.lit(60.0)
+    diff_minutes = (
+        F.unix_timestamp(F.col(event_ts_col)) - F.unix_timestamp(F.col(promised_col))
+    ) / F.lit(60.0)
     return F.when(
         F.col(event_ts_col).isNotNull() & F.col(promised_col).isNotNull(),
         F.greatest(diff_minutes, F.lit(0.0)),
@@ -50,7 +53,9 @@ def _delay_minutes_expr(event_ts_col: str, promised_col: str) -> Any:
 
 def _transit_time_hours_expr(event_ts_col: str, pickup_col: str) -> Any:
     """Compute transit duration hours from pickup to event timestamp."""
-    diff_hours = (F.unix_timestamp(F.col(event_ts_col)) - F.unix_timestamp(F.col(pickup_col))) / F.lit(3600.0)
+    diff_hours = (
+        F.unix_timestamp(F.col(event_ts_col)) - F.unix_timestamp(F.col(pickup_col))
+    ) / F.lit(3600.0)
     return F.when(
         F.col(event_ts_col).isNotNull() & F.col(pickup_col).isNotNull(),
         diff_hours,
@@ -137,7 +142,12 @@ def build_fct_delivery_event(
 
     region_candidates = [
         col
-        for col in ["event_region_code", "shipment_region_code", "shipment_base_region_code", "region_code"]
+        for col in [
+            "event_region_code",
+            "shipment_region_code",
+            "shipment_base_region_code",
+            "region_code",
+        ]
         if col in joined.columns
     ]
     region_expr = F.coalesce(*[F.col(col) for col in region_candidates], F.lit("UNKNOWN"))
@@ -147,7 +157,9 @@ def build_fct_delivery_event(
         .withColumn("region_code", region_expr)
         .withColumn(
             "p_date",
-            F.coalesce(F.to_date(F.col("event_ts")), F.to_date(F.col("updated_at")), F.current_date()),
+            F.coalesce(
+                F.to_date(F.col("event_ts")), F.to_date(F.col("updated_at")), F.current_date()
+            ),
         )
         .withColumn(
             "on_time_delivery_flag",

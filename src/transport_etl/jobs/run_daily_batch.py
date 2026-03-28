@@ -23,7 +23,6 @@ from transport_etl.common.spark import create_spark_session_from_config, stop_sp
 from transport_etl.publish.hive_writer import write_partitioned_table
 from transport_etl.publish.partitions import required_partition_columns
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 SQL_STAGING_DIR = PROJECT_ROOT / "sql" / "staging"
 _DATED_CSV_PATTERN = re.compile(r"_(\d{4}-\d{2}-\d{2})\.csv$")
@@ -223,9 +222,15 @@ def _blocking_quality_failures(
     blocked: list[str] = []
     if bool(quality_config.get("fail_on_schema_drift", True)) and "schema_drift" in failed_rules:
         blocked.append("schema_drift")
-    if bool(quality_config.get("fail_on_required_nulls", True)) and "required_nulls" in failed_rules:
+    if (
+        bool(quality_config.get("fail_on_required_nulls", True))
+        and "required_nulls" in failed_rules
+    ):
         blocked.append("required_nulls")
-    if bool(quality_config.get("fail_on_duplicate_primary_keys", True)) and "duplicate_keys" in failed_rules:
+    if (
+        bool(quality_config.get("fail_on_duplicate_primary_keys", True))
+        and "duplicate_keys" in failed_rules
+    ):
         blocked.append("duplicate_keys")
     return blocked
 
@@ -314,8 +319,12 @@ def _execute_daily_flow(
     events_source = _resolve_entity_source_path(raw_base_path, "delivery_events", batch_date)
     region_lookup_source = _resolve_region_lookup_path(reference_base_path)
 
-    ingest_bad_path = _join_storage_path(staging_base_path, "quarantine", "ingest", f"p_date={batch_date}")
-    quality_bad_path = _join_storage_path(staging_base_path, "quarantine", "quality", f"p_date={batch_date}")
+    ingest_bad_path = _join_storage_path(
+        staging_base_path, "quarantine", "ingest", f"p_date={batch_date}"
+    )
+    quality_bad_path = _join_storage_path(
+        staging_base_path, "quarantine", "quality", f"p_date={batch_date}"
+    )
 
     logger.info(
         "Resolved inputs shipments=%s carriers=%s delivery_events=%s region_lookup=%s",
@@ -431,7 +440,9 @@ def _execute_daily_flow(
     for entity, result in quality_summary.items():
         failed_rules = [str(rule) for rule in result.get("failed_rules", [])]
         invalid_count = int(result.get("invalid_count", 0) or 0)
-        blocking = _blocking_quality_failures(failed_rules=failed_rules, quality_config=quality_config)
+        blocking = _blocking_quality_failures(
+            failed_rules=failed_rules, quality_config=quality_config
+        )
 
         if failed_rules:
             logger.warning(
@@ -509,7 +520,9 @@ def _execute_daily_flow(
         fct_delivery_event_df=fct_delivery_event_df,
     )
 
-    partitioning = config.get("partitioning", {}) if isinstance(config.get("partitioning"), Mapping) else {}
+    partitioning = (
+        config.get("partitioning", {}) if isinstance(config.get("partitioning"), Mapping) else {}
+    )
     partition_keys = partitioning.get("keys")
     if not isinstance(partition_keys, list) or not partition_keys:
         partition_keys = required_partition_columns()
@@ -517,9 +530,13 @@ def _execute_daily_flow(
 
     write_mode = str(hive_config.get("mode", runtime_config.get("default_write_mode", "overwrite")))
     database = str(hive_config.get("database", "curated"))
-    register_hive_tables = bool(hive_config.get("register_tables", spark_config.get("enable_hive_support", True)))
+    register_hive_tables = bool(
+        hive_config.get("register_tables", spark_config.get("enable_hive_support", True))
+    )
     repair_partitions = bool(hive_config.get("repair_partitions", True))
-    parquet_options = io_config.get("parquet", {}) if isinstance(io_config.get("parquet"), Mapping) else None
+    parquet_options = (
+        io_config.get("parquet", {}) if isinstance(io_config.get("parquet"), Mapping) else None
+    )
 
     outputs: dict[str, str] = {}
     table_writes = [
@@ -598,7 +615,9 @@ def run_daily_batch(
     spark = None
     try:
         spark = create_spark_session_from_config(config=config)
-        result = _execute_daily_flow(spark=spark, config=config, batch_date=batch_date, logger=logger)
+        result = _execute_daily_flow(
+            spark=spark, config=config, batch_date=batch_date, logger=logger
+        )
         logger.info("Daily batch completed successfully; outputs=%s", result.get("outputs"))
         return 0
     except ModuleNotFoundError as exc:

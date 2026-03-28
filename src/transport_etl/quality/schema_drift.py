@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-
 _TYPE_ALIASES = {
     "str": "string",
     "varchar": "string",
@@ -78,7 +77,11 @@ def _columns_from_mapping(schema_map: Mapping[str, Any]) -> list[dict[str, Any]]
     normalized: list[dict[str, Any]] = []
     for name, value in schema_map.items():
         if isinstance(value, Mapping):
-            raw = {"name": name, "type": value.get("type", "string"), "nullable": value.get("nullable", True)}
+            raw = {
+                "name": name,
+                "type": value.get("type", "string"),
+                "nullable": value.get("nullable", True),
+            }
         else:
             raw = {"name": name, "type": value, "nullable": True}
 
@@ -181,12 +184,16 @@ def detect_schema_drift(
     return findings
 
 
-def has_schema_drift(actual_schema: Any, expected_schema: Any, enforce_column_order: bool = False) -> bool:
+def has_schema_drift(
+    actual_schema: Any, expected_schema: Any, enforce_column_order: bool = False
+) -> bool:
     """Return True when any schema drift finding is present."""
     return len(detect_schema_drift(actual_schema, expected_schema, enforce_column_order)) > 0
 
 
-def detect_df_schema_drift(df: Any, expected_schema: Any, enforce_column_order: bool = False) -> list[str]:
+def detect_df_schema_drift(
+    df: Any, expected_schema: Any, enforce_column_order: bool = False
+) -> list[str]:
     """Detect schema drift for a DataFrame-like object with a `schema` attribute."""
     if df is None or not hasattr(df, "schema"):
         raise ValueError("A DataFrame-like object with a 'schema' attribute is required")
