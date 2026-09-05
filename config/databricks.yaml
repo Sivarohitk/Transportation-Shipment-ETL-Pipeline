@@ -1,0 +1,53 @@
+app:
+  env: databricks
+
+runtime:
+  fail_fast: true
+
+spark:
+  profile: databricks
+  app_name: supply-chain-lakehouse
+  # On Databricks, the cluster already provides a SparkSession.
+  # enable_hive_support is intentionally false; Unity Catalog is accessed
+  # through the existing session without enableHiveSupport().
+  enable_hive_support: false
+  conf:
+    spark.sql.shuffle.partitions: "200"
+    spark.sql.adaptive.enabled: "true"
+    spark.sql.sources.partitionOverwriteMode: dynamic
+    spark.sql.session.timeZone: UTC
+
+# Storage paths for Databricks (DBFS or Unity Catalog volumes).
+# Override at runtime via CLI --raw-base-path / --curated-base-path or
+# environment variables injected by the cluster/job configuration.
+paths:
+  raw_base_path: dbfs:/mnt/transport/raw
+  staging_base_path: dbfs:/mnt/transport/staging
+  curated_base_path: dbfs:/mnt/transport/curated
+  audit_base_path: dbfs:/mnt/transport/logs
+  reference_base_path: dbfs:/mnt/transport/reference
+
+# Unity Catalog configuration (Databricks only).
+# catalog and schema names are configuration-driven; never hardcode them in code.
+unity_catalog:
+  catalog: supply_chain
+  bronze_schema: bronze
+  silver_schema: silver
+  gold_schema: gold
+
+io:
+  curated_outputs:
+    # Delta is the target format for Databricks; writers must check spark.profile
+    # before switching from Parquet to Delta.  This key signals intent only;
+    # Delta write logic is implemented in a later phase.
+    format: delta
+
+hive:
+  # Hive-style registration (MSCK REPAIR TABLE) is not applicable on Databricks
+  # Unity Catalog.  Tables are managed through the Delta write path.
+  register_tables: false
+  repair_partitions: false
+
+logging:
+  level: INFO
+  json: true

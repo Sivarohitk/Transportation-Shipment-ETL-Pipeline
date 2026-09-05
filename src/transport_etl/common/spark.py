@@ -8,8 +8,10 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from transport_etl.common.constants import (
+    SPARK_DATABRICKS_CONF_FILE,
     SPARK_EMR_CONF_FILE,
     SPARK_LOCAL_CONF_FILE,
+    SPARK_PROFILE_DATABRICKS,
     SPARK_PROFILE_DIR,
     SPARK_PROFILE_EMR,
     SPARK_PROFILE_LOCAL,
@@ -18,11 +20,13 @@ from transport_etl.common.constants import (
 
 
 def _profile_conf_path(profile: str, spark_profile_dir: str | Path = SPARK_PROFILE_DIR) -> Path:
-    """Resolve profile config path for local/emr Spark settings."""
+    """Resolve profile config path for local/emr/databricks Spark settings."""
     if profile == SPARK_PROFILE_LOCAL:
         filename = SPARK_LOCAL_CONF_FILE
     elif profile == SPARK_PROFILE_EMR:
         filename = SPARK_EMR_CONF_FILE
+    elif profile == SPARK_PROFILE_DATABRICKS:
+        filename = SPARK_DATABRICKS_CONF_FILE
     else:
         raise ValueError(f"Unsupported Spark profile: {profile}")
 
@@ -91,12 +95,19 @@ def create_spark_session(
 ):
     """Create and return a configured SparkSession.
 
+    For the ``databricks`` profile the function reuses the active session that
+    the Databricks cluster already provides rather than constructing a new one.
+    Extra conf values are applied via ``SparkSession.conf.set`` so they do not
+    conflict with the managed session lifecycle.
+
     Args:
         app_name: Spark application name.
-        profile: Runtime profile (`local` or `emr`).
-        enable_hive_support: Enable Hive catalog support if true.
+        profile: Runtime profile (``local``, ``emr``, or ``databricks``).
+        enable_hive_support: Enable Hive catalog support if true.  Ignored for
+            the ``databricks`` profile because the cluster session already
+            provides Unity Catalog access.
         conf: Additional Spark conf values.
-        spark_profile_dir: Directory containing profile `.conf` files.
+        spark_profile_dir: Directory containing profile ``.conf`` files.
     """
     from pyspark.sql import SparkSession
 
@@ -133,6 +144,42 @@ def create_spark_session(
     if existing_session is not None and not _session_is_live(existing_session):
         _clear_registered_sessions()
         existing_session = None
+
+    # On Databricks the cluster already owns an active SparkSession.
+    # Reuse it directly; applying conf overrides via conf.set is safe
+    # and does not interfere with cluster-managed session state.
+    if profile == SPARK_PROFILE_DATABRICKS:
+        if existing_session is not None and _session_is_live(existing_session):
+            spark_conf = build_spark_conf(
+                profile=profile,
+                app_conf=None,
+                extra_conf=conf,
+                spark_profile_dir=spark_profile_dir,
+            )
+            for key, value in spark_conf.items():
+                try:
+                    existing_session.conf.set(key, value)
+                except Exception:
+                    # Some cluster-managed settings are read-only; skip silently.
+                    pass
+            # Mark as not owned so stop_spark_session skips it.
+            setattr(existing_session, "_transport_etl_owned_session", False)
+            return existing_session
+
+        # No active session on Databricks is unexpected but fall through to
+        # builder path so tests that construct their own sessions still work.
+        spark_conf = build_spark_conf(
+            profile=profile,
+            app_conf=None,
+            extra_conf=conf,
+            spark_profile_dir=spark_profile_dir,
+        )
+        builder = SparkSession.builder.appName(app_name)
+        for key, value in spark_conf.items():
+            builder = builder.config(key, value)
+        spark_session = builder.getOrCreate()
+        setattr(spark_session, "_transport_etl_owned_session", existing_session is None)
+        return spark_session
 
     spark_conf = build_spark_conf(
         profile=profile,

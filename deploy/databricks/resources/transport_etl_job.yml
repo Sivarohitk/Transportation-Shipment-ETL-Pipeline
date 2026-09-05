@@ -1,0 +1,189 @@
+# Lakeflow (formerly "Databricks Jobs") definition for the
+# transport-shipment-ETL pipeline.
+#
+# This file is referenced from ``databricks.yml``.  The job runs the
+# five tasks documented in docs/databricks_deployment.md.  Each task
+# invokes the existing ``transport-etl`` or ``transport-etl-ml``
+# console script; the pipeline logic is **not** duplicated as
+# notebooks.
+#
+# Task DAG (failure of any blocking task fails the whole job):
+#
+#   ingest_bronze_silver_gold  (Python task, transport-etl)
+#           │
+#           ▼
+#   score_late_risk            (Python task, transport-etl-ml)
+#           │
+#           ▼
+#   data_quality_checks        (Python task, pytest)
+
+resources:
+  jobs:
+    transport_etl_job:
+      name: "transport_etl_job"
+      # Description is shown in the Lakeflow Jobs UI.
+      description: >-
+        Transport Shipment ETL — daily Bronze, Silver, and Gold
+        refresh plus the late-shipment risk scoring.  Tasks
+        invoke the existing ``transport-etl`` and
+        ``transport-etl-ml`` console scripts (no notebook copies
+        of the pipeline).
+      # A single job-level parameter is exposed so operators can
+      # re-run a specific day.  ``run_date`` is passed to every
+      # task as a runtime parameter.
+      parameters:
+        - name: "run_date"
+          default: ""
+      # ``queue`` lets operators trigger a backfill manually; the
+      # CI / scheduled runs use the default trigger below.
+      max_concurrent_runs: 1
+      # Schedule: a daily trigger at 06:00 UTC.  Operators can
+      # override this per target (e.g. weekly for staging).
+      schedule:
+        quartz_cron_expression: "0 0 6 * * ?"
+        timezone_id: "UTC"
+        pause_status: "UNPAUSED"
+      # Tags appear in the Lakeflow UI and in the audit log.
+      tags:
+        project: "transport_etl"
+        env: "${var.environment}"
+        pipeline: "shipment_analytics"
+        owner: "data-engineering"
+
+      # A small job cluster is created on every run and torn down
+      # on completion.  This is the Databricks-recommended pattern
+      # for batch pipelines because it isolates the runtime
+      # environment per run.
+      job_clusters:
+        - job_cluster_key: "transport_etl_cluster"
+          new_cluster:
+            # Spark version is pinned to the runtime supported by
+            # the Databricks Runtime we target.  14.3 is the LTS
+            # line that ships PySpark 3.5.x.
+            spark_version: "14.3.x-scala2.12"
+            # The node type is left to the operator via the
+            # workspace default; we don't pin a hardware profile.
+            node_type_id: null
+            # The cluster has a single worker; the pipeline's
+            # primary workload is small and is single-node friendly.
+            num_workers: 0
+            # ``data_security_mode`` = ``SINGLE_USER`` is the
+            # recommended setting for production Lakeflow jobs.
+            data_security_mode: "SINGLE_USER"
+            # Runtime-version-driven Spark conf.  These mirror
+            # ``config/spark/databricks.conf`` in the repository.
+            spark_conf:
+              spark.sql.shuffle.partitions: "200"
+              spark.sql.adaptive.enabled: "true"
+              spark.sql.sources.partitionOverwriteMode: "dynamic"
+              spark.sql.session.timeZone: "UTC"
+              # ML packages installed on the cluster.  We list
+              # exactly the libraries that ``pyproject.toml`` and
+              # the ML tests need so the job can run ``pandas``,
+              # ``scikit-learn`` etc.  Versions are intentionally
+              # omitted to let the runtime default apply.
+              spark.databricks.delta.preview.enabled: "true"
+            # The custom tags are mirrored in the cluster UI.
+            custom_tags:
+              team: "data-engineering"
+              cost-center: "transport"
+            # The cluster runs on the latest GA runtime.
+            runtime_engine: "STANDARD"
+      tasks:
+        - task_key: "ingest_bronze_silver_gold"
+          description: >-
+            Ingest the day's CSVs, validate against the explicit
+            schemas, and write Bronze + Silver + Gold tables.
+            This is the existing ``run_daily_batch`` end-to-end
+            flow.
+          job_cluster_key: "transport_etl_cluster"
+          # ``python_wheel_task`` is the right task type for our
+          # use case: the wheel is installed once and the task
+          # invokes the entry point with the configured parameters.
+          # This avoids the need to maintain a separate notebook.
+          python_wheel_task:
+            package_name: "transport_shipment_etl"
+            entry_point: "${var.etl_entry_point}"
+            parameters:
+              - "--config"
+              - "${var.config_path}"
+              - "--job"
+              - "daily"
+              - "--run-date"
+              - "{{job.parameters.run_date}}"
+              - "--raw-base-path"
+              - "${var.raw_base_path}"
+              - "--reference-base-path"
+              - "${var.reference_base_path}"
+              - "--staging-base-path"
+              - "${var.staging_base_path}"
+              - "--curated-base-path"
+              - "${var.curated_base_path}"
+              - "--hive-database"
+              - "${var.hive_database}"
+              - "--spark-profile"
+              - "${var.spark_profile}"
+              - "--no-register-hive"
+            # The task's logs are shipped to the cluster's log
+            # destination.  ``on_failure`` propagates the exit
+            # code back to the parent job.
+            on_failure: "fail"
+            timeout_seconds: 3600
+          # The Bronze+Silver+Gold task is the predecessor of every
+          # downstream task.
+          depends_on: []
+
+        - task_key: "score_late_risk"
+          description: >-
+            Score the day's shipments using the trained
+            late-risk model.  The model is trained on the most
+            recent historical shipments inside the same
+            notebook task (chronological train/val/test split).
+          job_cluster_key: "transport_etl_cluster"
+          python_wheel_task:
+            package_name: "transport_shipment_etl"
+            entry_point: "${var.ml_entry_point}"
+            parameters:
+              - "train-and-score"
+              - "--shipments"
+              - "${var.curated_base_path}/fct_shipment"
+              - "--output-dir"
+              - "${var.audit_base_path}/ml"
+              - "--model"
+              - "logistic_regression"
+              - "--decision-threshold"
+              - "${var.ml_decision_threshold}"
+            on_failure: "fail"
+            timeout_seconds: 1800
+          depends_on:
+            - task_key: "ingest_bronze_silver_gold"
+
+        - task_key: "data_quality_checks"
+          description: >-
+            Run the data-quality test suite against the freshly
+            written Silver and Gold tables.  Failures surface as
+            job-task failures in Lakeflow.
+          job_cluster_key: "transport_etl_cluster"
+          python_wheel_task:
+            package_name: "transport_shipment_etl"
+            entry_point: "sh"
+            parameters:
+              - "-lc"
+              - >-
+                cd /opt/transport-etl &&
+                PYTHONPATH=/opt/transport-etl/src
+                python -m pytest -q tests/data_quality/
+            on_failure: "fail"
+            timeout_seconds: 1800
+          depends_on:
+            - task_key: "ingest_bronze_silver_gold"
+            - task_key: "score_late_risk"
+
+      # The job's email notification is intentionally omitted;
+      # operators wire their own PagerDuty / Slack integration in
+      # the workspace.
+      email_notifications: {}
+      # ``webhook_notifications`` is the documented way to surface
+      # job failures to an external system.  We leave it empty
+      # so operators can configure their own endpoint URL.
+      webhook_notifications: {}

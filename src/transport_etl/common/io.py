@@ -33,14 +33,32 @@ def is_cloud_path(path: str | Path) -> bool:
     return value.startswith("s3://") or value.startswith("s3a://") or value.startswith("s3n://")
 
 
+def is_dbfs_path(path: str | Path) -> bool:
+    """Return ``True`` for Databricks DBFS URIs (``dbfs:/``).
+
+    DBFS paths are managed by the Databricks runtime and must not be treated as
+    local filesystem paths.  They behave like cloud paths for the purpose of
+    directory creation guards — ``ensure_local_dir`` skips them transparently
+    because ``is_cloud_path`` does not recognise the ``dbfs:`` scheme.
+
+    This helper is provided so calling code can explicitly test for DBFS when
+    distinguishing between local, S3, and DBFS storage targets.
+    """
+    return str(path).lower().startswith("dbfs:/")
+
+
 def ensure_local_dir(path: str | Path) -> Path:
     """Ensure a local directory exists and return its path.
 
-    Cloud URIs are returned as-is without local directory operations.
+    Cloud URIs (S3, DBFS) are returned as-is without local directory operations.
+    The original string is checked for URI schemes before constructing a
+    ``Path`` object, because ``Path("dbfs:/...")`` normalises the slash on
+    Windows and the scheme check would otherwise fail.
     """
-    path_obj = Path(path)
-    if is_cloud_path(path_obj):
-        return path_obj
+    path_str = str(path)
+    if is_cloud_path(path_str) or is_dbfs_path(path_str):
+        return Path(path_str)
+    path_obj = Path(path_str)
     path_obj.mkdir(parents=True, exist_ok=True)
     return path_obj
 
@@ -48,11 +66,13 @@ def ensure_local_dir(path: str | Path) -> Path:
 def path_exists(path: str | Path) -> bool:
     """Check local path existence.
 
-    Cloud path existence checks require Spark/Hadoop APIs and are intentionally skipped.
+    Cloud and DBFS path existence checks require Spark/Hadoop APIs and are
+    intentionally skipped (assumed to exist).
     """
-    if is_cloud_path(path):
+    path_str = str(path)
+    if is_cloud_path(path_str) or is_dbfs_path(path_str):
         return True
-    return Path(path).exists()
+    return Path(path_str).exists()
 
 
 def _normalize_options(options: Mapping[str, Any] | None) -> dict[str, str]:

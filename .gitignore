@@ -35,6 +35,10 @@ data/local/curated/*
 data/local/logs/*
 !data/local/logs/.gitkeep
 
+# Synthetic ML foundation datasets (keep gitkeep, ignore generated)
+data/generated/*
+!data/generated/.gitkeep
+
 # Spark / Hive scratch
 metastore_db/
 spark-warehouse/

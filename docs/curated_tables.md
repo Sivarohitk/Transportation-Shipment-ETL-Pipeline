@@ -2,6 +2,92 @@
 
 This document defines the curated analytical model produced by the ETL pipeline.
 
+## Silver Tables (Phase 5)
+
+The Silver layer produces validated, deduplicated, region-enriched
+datasets that the Gold models consume.  Silver lives in
+`src/transport_etl/silver/`.
+
+### `curated.stg_shipments` / `supply_chain.silver.stg_shipments`
+- Grain: one row per `shipment_id` (deduplicated by `updated_at`)
+- Source: `curated.raw_shipments` (Bronze)
+- Business key: `shipment_id`
+- Reuses `standardize_columns` + `enrich_shipments_with_region`
+
+### `curated.stg_carriers` / `supply_chain.silver.stg_carriers`
+- Grain: one row per `carrier_id` (deduplicated by `updated_at`)
+- Source: `curated.raw_carriers` (Bronze)
+- Business key: `carrier_id`
+
+### `curated.stg_delivery_events` / `supply_chain.silver.stg_delivery_events`
+- Grain: one row per `event_id` (deduplicated by `updated_at`)
+- Source: `curated.raw_delivery_events` (Bronze)
+- Business key: `event_id`
+
+### Silver MERGE Behavior (Databricks)
+
+| Aspect            | Value |
+|-------------------|-------|
+| MATCH KEY         | `shipment_id` / `carrier_id` / `event_id` (business key) |
+| WHEN MATCHED      | `UPDATE SET <all non-key columns> = source.<...>` |
+| WHEN NOT MATCHED  | `INSERT (<all columns>) VALUES (source.<...>)` |
+| Late-arriving data | Same MERGE; existing keys are updated, new keys are inserted |
+| Idempotency       | Same source data produces identical target rows |
+
+The renderer is a pure-Python function
+(`transport_etl.silver.merge_spec.build_merge_sql`); the
+orchestrator (`transport_etl.silver.merge.execute_silver_merge`)
+registers the source as a Spark temp view and runs the rendered
+SQL through `spark.sql`.  No `delta-spark` Python import is
+required for unit tests; the live Delta write happens on the
+Databricks runtime.
+
+### Silver Quarantine
+
+Quarantined records are written to
+`<quarantine>/<table>/<rule>/part-*.parquet` with these audit
+columns preserved:
+
+- `__quarantine_rule` — Silver rule label
+- `__source_entity` — Silver table name
+- `__source_identity` — `<business_key>:<value>`
+- `__batch_id` / `__run_date` — operational lineage
+- `__quarantined_at` — current timestamp
+
+## Bronze Tables (Phase 4)
+
+The Bronze layer preserves raw source records with the smallest possible
+transformation footprint.  It lives in `src/transport_etl/bronze/`.
+
+### `curated.raw_shipments` / `supply_chain.bronze.raw_shipments`
+- Grain: one row per source shipment record (with operational metadata)
+- Source: `data/sample/raw/shipments_YYYY-MM-DD.csv`
+- Reuses the explicit schema in `config/schemas/shipments.schema.json`
+
+### `curated.raw_carriers` / `supply_chain.bronze.raw_carriers`
+- Grain: one row per source carrier record
+- Source: `data/sample/raw/carriers_YYYY-MM-DD.csv`
+- Reuses the explicit schema in `config/schemas/carriers.schema.json`
+
+### `curated.raw_delivery_events` / `supply_chain.bronze.raw_delivery_events`
+- Grain: one row per source delivery event record
+- Source: `data/sample/raw/delivery_events_YYYY-MM-DD.csv`
+- Reuses the explicit schema in `config/schemas/delivery_events.schema.json`
+
+### Operational Ingestion Metadata
+
+Every Bronze record carries the same metadata columns:
+
+| Column         | Description                                              |
+|----------------|----------------------------------------------------------|
+| `_ingested_at` | Spark `current_timestamp()` at ingestion (JVM local time) |
+| `_source_file` | Absolute source CSV path supplied by the job runner       |
+| `_batch_id`    | Deterministic id `<job>_<YYYYMMDD>` derived from run_date |
+| `_run_date`    | Batch run date (`YYYY-MM-DD`) supplied by the job runner |
+
+Bronze preserves **all** source columns exactly as the underlying ingest
+modules return them; no Silver business cleaning happens in Bronze.
+
 ## Partition Strategy
 All curated outputs are partitioned by:
 - `p_date`
@@ -117,6 +203,84 @@ This enables fast date and segment filtering for KPI and operational analysis.
 | `avg_cost_per_mile` | double | Cost efficiency metric |
 | `volume_by_carrier` | long | Shipment volume |
 | `delivery_event_density` | double | Events per shipment |
+
+### `curated.carrier_performance` / `supply_chain.gold.carrier_performance`
+- Grain: one row per (`p_date`, `carrier_id`, `service_mode`)
+- Purpose: daily carrier-level performance roll-up
+- Source: `fct_shipment` + `fct_delivery_event` + `dim_carrier`
+- Defined in `sql/gold/carrier_performance.sql` and
+  `transport_etl.transform.build_carrier_performance`
+
+| Column | Type | Meaning |
+| --- | --- | --- |
+| `p_date` | date | Snapshot date |
+| `carrier_id` | string | Carrier identifier |
+| `service_mode` | string | Service mode (FTL / LTL / PARCEL / UNKNOWN) |
+| `shipment_volume` | long | Distinct shipment count |
+| `delivered_shipments` | long | Shipments with a non-null actual delivery |
+| `on_time_shipments` | long | On-time delivery count |
+| `late_shipments` | long | Late delivery count |
+| `exception_shipments` | long | Shipments with operational exceptions |
+| `first_attempt_success_shipments` | long | Delivered on attempt 1 |
+| `on_time_delivery_rate` | double | `on_time_shipments / delivered_shipments` |
+| `late_delivery_rate` | double | `late_shipments / delivered_shipments` |
+| `exception_rate` | double | `exception_shipments / shipment_volume` |
+| `first_attempt_success_rate` | double | `first_attempt_success_shipments / delivered_shipments` |
+| `avg_transit_hours` | double | `AVG(transit_time_hours)` |
+| `total_delay_minutes` | double | `SUM(delay_minutes)` |
+| `avg_cost_per_mile` | double | `total_shipping_cost_usd / total_distance_miles` |
+| `total_shipping_cost_usd` | double | `SUM(shipping_cost_usd)` |
+| `total_distance_miles` | double | `SUM(distance_miles)` |
+
+### `curated.route_performance` / `supply_chain.gold.route_performance`
+- Grain: one row per (`p_date`, `origin_region_code`,
+  `destination_region_code`, `carrier_id`)
+- Purpose: daily route-level performance roll-up
+- Source: `fct_shipment`
+- Defined in `sql/gold/route_performance.sql` and
+  `transport_etl.transform.build_route_performance`
+
+| Column | Type | Meaning |
+| --- | --- | --- |
+| `p_date` | date | Snapshot date |
+| `origin_region_code` | string | Origin region |
+| `destination_region_code` | string | Destination region |
+| `carrier_id` | string | Carrier identifier |
+| `shipment_count` | long | Distinct shipment count |
+| `delivered_shipments` | long | Shipments with a non-null actual delivery |
+| `on_time_shipments` | long | On-time delivery count |
+| `late_shipments` | long | Late delivery count |
+| `exception_shipments` | long | Shipments with operational exceptions |
+| `on_time_rate` | double | `on_time_shipments / delivered_shipments` |
+| `late_rate` | double | `late_shipments / delivered_shipments` |
+| `exception_rate` | double | `exception_shipments / shipment_count` |
+| `avg_transit_hours` | double | `AVG(transit_time_hours)` |
+| `avg_cost_per_mile` | double | `total_shipping_cost_usd / total_distance_miles` |
+| `total_shipping_cost_usd` | double | `SUM(shipping_cost_usd)` |
+| `total_distance_miles` | double | `SUM(distance_miles)` |
+
+### `curated.delivery_exception_summary` / `supply_chain.gold.delivery_exception_summary`
+- Grain: one row per (`p_date`, `event_type`, `carrier_id`,
+  `region_code`)
+- Purpose: daily event-type exception summary
+- Source: `fct_delivery_event` + `fct_shipment` (for the denominator)
+- Defined in `sql/gold/delivery_exception_summary.sql` and
+  `transport_etl.transform.build_delivery_exception_summary`
+
+| Column | Type | Meaning |
+| --- | --- | --- |
+| `p_date` | date | Snapshot date |
+| `event_type` | string | Event classification (e.g. DELIVERED, DELAYED, EXCEPTION) |
+| `carrier_id` | string | Carrier identifier |
+| `region_code` | string | Region |
+| `event_count` | long | Number of events of this type |
+| `shipment_count` | long | Distinct shipments touched by events of this type |
+| `exception_event_count` | long | Events of this type flagged as exception |
+| `exception_shipment_count` | long | Distinct shipments with at least one exception event of this type |
+| `rate` | double | `event_count / total_shipments` (per-grain denominator) |
+| `avg_delay_minutes` | double | `AVG(delay_minutes)` |
+| `is_exception_event_type` | boolean | `event_type IN ('DELAYED','EXCEPTION','HOLD')` |
+| `total_shipments` | long | Per-grain shipment denominator (from `fct_shipment`) |
 
 ## Example Queries
 ```sql

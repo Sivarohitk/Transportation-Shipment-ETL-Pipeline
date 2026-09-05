@@ -12,6 +12,7 @@ import yaml
 from transport_etl.common.constants import (
     BASE_CONFIG_FILE,
     CONFIG_DIR,
+    DATABRICKS_CONFIG_FILE,
     DEV_CONFIG_FILE,
     PROD_CONFIG_FILE,
 )
@@ -62,6 +63,8 @@ def _resolve_named_config(name: str, config_dir: Path) -> Path:
         return config_dir / DEV_CONFIG_FILE
     if normalized in {"prod", "prod.yaml"}:
         return config_dir / PROD_CONFIG_FILE
+    if normalized in {"databricks", "databricks.yaml"}:
+        return config_dir / DATABRICKS_CONFIG_FILE
     return Path(name)
 
 

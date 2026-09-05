@@ -25,6 +25,7 @@ dev = [
 
 [project.scripts]
 transport-etl = "transport_etl.main:main"
+transport-etl-ml = "transport_etl.ml.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

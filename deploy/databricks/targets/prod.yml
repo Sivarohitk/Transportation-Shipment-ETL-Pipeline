@@ -1,0 +1,16 @@
+# Per-target overrides for the production environment.
+#
+# This file is auto-merged with the top-level ``databricks.yml`` when
+# the operator runs ``databricks bundle deploy --target prod``.
+#
+# Production deploys should never be initiated without an explicit
+# human review.  See docs/databricks_deployment.md for the full
+# manual command list.
+
+variables:
+  wheel_path: "./dist/transport_shipment_etl-0.1.0-py3-none-any.whl"
+  catalog_name: "supply_chain"
+  bronze_schema: "bronze"
+  silver_schema: "silver"
+  gold_schema: "gold"
+  environment: "prod"

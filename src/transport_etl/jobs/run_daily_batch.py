@@ -14,6 +14,9 @@ from transport_etl.common.constants import (
     TABLE_DIM_CARRIER,
     TABLE_FCT_DELIVERY_EVENT,
     TABLE_FCT_SHIPMENT,
+    TABLE_GOLD_CARRIER_PERFORMANCE,
+    TABLE_GOLD_DELIVERY_EXCEPTION_SUMMARY,
+    TABLE_GOLD_ROUTE_PERFORMANCE,
     TABLE_KPI_DELIVERY_DAILY,
 )
 from transport_etl.common.dates import DATE_FMT, parse_date, resolve_run_date
@@ -36,6 +39,18 @@ def _join_storage_path(base_path: str, *parts: str) -> str:
         base = base_path.rstrip("/\\")
         return "/".join([base] + cleaned_parts)
     return str(Path(base_path, *cleaned_parts))
+
+
+def _safe_count(df: Any) -> int:
+    """Return the row count of a DataFrame, or ``-1`` when unsupported."""
+    if df is None:
+        return -1
+    if hasattr(df, "count"):
+        try:
+            return int(df.count())
+        except Exception:  # pragma: no cover - defensive
+            return -1
+    return -1
 
 
 def _set_nested_value(payload: dict[str, Any], dotted_key: str, value: Any) -> None:
@@ -520,6 +535,37 @@ def _execute_daily_flow(
         fct_delivery_event_df=fct_delivery_event_df,
     )
 
+    logger.info("Building Phase-6 Gold analytics tables")
+
+    from transport_etl.transform.build_carrier_performance import (
+        build_carrier_performance,
+    )
+    from transport_etl.transform.build_delivery_exception_summary import (
+        build_delivery_exception_summary,
+    )
+    from transport_etl.transform.build_route_performance import (
+        build_route_performance,
+    )
+
+    carrier_performance_df = build_carrier_performance(
+        fct_shipment_df=fct_shipment_df,
+        fct_delivery_event_df=fct_delivery_event_df,
+        dim_carrier_df=dim_carrier_df,
+    )
+    route_performance_df = build_route_performance(fct_shipment_df=fct_shipment_df)
+    delivery_exception_summary_df = build_delivery_exception_summary(
+        fct_delivery_event_df=fct_delivery_event_df,
+        fct_shipment_df=fct_shipment_df,
+    )
+
+    logger.info(
+        "Phase-6 Gold analytics built: carrier_performance=%s, "
+        "route_performance=%s, delivery_exception_summary=%s",
+        _safe_count(carrier_performance_df),
+        _safe_count(route_performance_df),
+        _safe_count(delivery_exception_summary_df),
+    )
+
     partitioning = (
         config.get("partitioning", {}) if isinstance(config.get("partitioning"), Mapping) else {}
     )
@@ -538,6 +584,177 @@ def _execute_daily_flow(
         io_config.get("parquet", {}) if isinstance(io_config.get("parquet"), Mapping) else None
     )
 
+    logger.info("Building Bronze layer outputs")
+
+    from transport_etl.bronze.builder import (
+        build_bronze_carriers,
+        build_bronze_delivery_events,
+        build_bronze_shipments,
+    )
+    from transport_etl.bronze.publisher import (
+        TABLE_BRONZE_CARRIERS,
+        TABLE_BRONZE_DELIVERY_EVENTS,
+        TABLE_BRONZE_SHIPMENTS,
+        publish_bronze_table,
+    )
+
+    bronze_batch_id = f"daily_{batch_date}"
+    bronze_writes: dict[str, str] = {}
+    bronze_dfs: dict[str, Any] = {}
+    bronze_writer_config = {
+        **dict(curated_write_config),
+        "execution_mode": str(spark_config.get("profile", "local")),
+    }
+
+    for entity, source_path, builder in (
+        (TABLE_BRONZE_SHIPMENTS, shipments_source, build_bronze_shipments),
+        (TABLE_BRONZE_CARRIERS, carriers_source, build_bronze_carriers),
+        (TABLE_BRONZE_DELIVERY_EVENTS, events_source, build_bronze_delivery_events),
+    ):
+        bronze_df = builder(
+            spark=spark,
+            source_path=source_path,
+            run_date=batch_date,
+            batch_id=bronze_batch_id,
+            job_name="daily",
+            quarantine_path=_join_storage_path(staging_base_path, "quarantine", "ingest"),
+            bad_record_write_config=invalid_record_write_config,
+        )
+        bronze_writes[entity] = publish_bronze_table(
+            df=bronze_df,
+            config=config,
+            table_name=entity,
+            spark=spark,
+            mode=write_mode,
+            writer_options=parquet_options,
+            write_config=bronze_writer_config,
+            logger=logger,
+        )
+        bronze_dfs[entity] = bronze_df
+
+    bronze_writes_shipments_df = bronze_dfs[TABLE_BRONZE_SHIPMENTS]
+    bronze_writes_carriers_df = bronze_dfs[TABLE_BRONZE_CARRIERS]
+    bronze_writes_events_df = bronze_dfs[TABLE_BRONZE_DELIVERY_EVENTS]
+
+    logger.info("Bronze layer published destinations=%s", bronze_writes)
+
+    logger.info("Building Silver layer outputs")
+
+    from transport_etl.ingest.carriers import load_carriers_schema_definition
+    from transport_etl.ingest.delivery_events import load_delivery_events_schema_definition
+    from transport_etl.ingest.shipments import load_shipments_schema_definition
+    from transport_etl.silver.builder import (
+        build_silver_carriers,
+        build_silver_delivery_events,
+        build_silver_shipments,
+    )
+    from transport_etl.silver.publisher import (
+        TABLE_SILVER_CARRIERS,
+        TABLE_SILVER_DELIVERY_EVENTS,
+        TABLE_SILVER_SHIPMENTS,
+        publish_silver_table,
+    )
+
+    silver_batch_id = f"daily_{batch_date}"
+    silver_writes: dict[str, str] = {}
+    silver_quarantine_path = _join_storage_path(
+        staging_base_path, "quarantine", "silver", f"p_date={batch_date}"
+    )
+    silver_writer_config = {
+        **dict(curated_write_config),
+        "execution_mode": str(spark_config.get("profile", "local")),
+    }
+
+    silver_shipments_schema = load_shipments_schema_definition()
+    silver_carriers_schema = load_carriers_schema_definition()
+    silver_delivery_events_schema = load_delivery_events_schema_definition()
+
+    silver_shipments_result = build_silver_shipments(
+        spark=spark,
+        bronze_df=bronze_writes_shipments_df,
+        schema_def=silver_shipments_schema,
+        batch_id=silver_batch_id,
+        run_date=batch_date,
+        region_lookup_df=region_lookup_df,
+        quarantine_path=silver_quarantine_path,
+        write_config=silver_writer_config,
+        logger=logger,
+    )
+    silver_writes[TABLE_SILVER_SHIPMENTS] = publish_silver_table(
+        df=silver_shipments_result.silver_df,
+        config=config,
+        table_name=TABLE_SILVER_SHIPMENTS,
+        spark=spark,
+        mode=write_mode,
+        writer_options=parquet_options,
+        write_config=silver_writer_config,
+        logger=logger,
+    )
+
+    silver_carriers_result = build_silver_carriers(
+        spark=spark,
+        bronze_df=bronze_writes_carriers_df,
+        schema_def=silver_carriers_schema,
+        batch_id=silver_batch_id,
+        run_date=batch_date,
+        region_lookup_df=region_lookup_df,
+        quarantine_path=silver_quarantine_path,
+        write_config=silver_writer_config,
+        logger=logger,
+    )
+    silver_writes[TABLE_SILVER_CARRIERS] = publish_silver_table(
+        df=silver_carriers_result.silver_df,
+        config=config,
+        table_name=TABLE_SILVER_CARRIERS,
+        spark=spark,
+        mode=write_mode,
+        writer_options=parquet_options,
+        write_config=silver_writer_config,
+        logger=logger,
+    )
+
+    silver_delivery_events_result = build_silver_delivery_events(
+        spark=spark,
+        bronze_df=bronze_writes_events_df,
+        schema_def=silver_delivery_events_schema,
+        batch_id=silver_batch_id,
+        run_date=batch_date,
+        region_lookup_df=region_lookup_df,
+        quarantine_path=silver_quarantine_path,
+        write_config=silver_writer_config,
+        logger=logger,
+    )
+    silver_writes[TABLE_SILVER_DELIVERY_EVENTS] = publish_silver_table(
+        df=silver_delivery_events_result.silver_df,
+        config=config,
+        table_name=TABLE_SILVER_DELIVERY_EVENTS,
+        spark=spark,
+        mode=write_mode,
+        writer_options=parquet_options,
+        write_config=silver_writer_config,
+        logger=logger,
+    )
+
+    silver_summary = {
+        TABLE_SILVER_SHIPMENTS: {
+            "survived": silver_shipments_result.survived_count,
+            "invalid": silver_shipments_result.invalid_count,
+        },
+        TABLE_SILVER_CARRIERS: {
+            "survived": silver_carriers_result.survived_count,
+            "invalid": silver_carriers_result.invalid_count,
+        },
+        TABLE_SILVER_DELIVERY_EVENTS: {
+            "survived": silver_delivery_events_result.survived_count,
+            "invalid": silver_delivery_events_result.invalid_count,
+        },
+    }
+    logger.info(
+        "Silver layer published destinations=%s summary=%s",
+        silver_writes,
+        silver_summary,
+    )
+
     outputs: dict[str, str] = {}
     table_writes = [
         (TABLE_DIM_CARRIER, dim_carrier_df),
@@ -545,6 +762,18 @@ def _execute_daily_flow(
         (TABLE_FCT_DELIVERY_EVENT, fct_delivery_event_df),
         (TABLE_AGG_SHIPMENT_DAILY, agg_shipment_daily_df),
         (TABLE_KPI_DELIVERY_DAILY, kpi_delivery_daily_df),
+        (
+            TABLE_GOLD_CARRIER_PERFORMANCE,
+            carrier_performance_df,
+        ),
+        (
+            TABLE_GOLD_ROUTE_PERFORMANCE,
+            route_performance_df,
+        ),
+        (
+            TABLE_GOLD_DELIVERY_EXCEPTION_SUMMARY,
+            delivery_exception_summary_df,
+        ),
     ]
 
     for table_name, dataframe in table_writes:
@@ -568,6 +797,9 @@ def _execute_daily_flow(
     return {
         "batch_date": batch_date,
         "outputs": outputs,
+        "bronze": bronze_writes,
+        "silver": silver_writes,
+        "silver_summary": silver_summary,
         "quality": {
             entity: {
                 "status": result.get("status"),
