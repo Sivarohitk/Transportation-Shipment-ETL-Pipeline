@@ -31,7 +31,6 @@ from transport_etl.ml.constants import (
     SCORE_COLUMN_SHIPMENT_ID,
     classify_risk_band,
 )
-from transport_etl.ml.features import fill_missing_for_scoring
 from transport_etl.ml.leakage_audit import assert_no_leakage
 from transport_etl.ml.training import LateRiskModel
 
@@ -78,7 +77,7 @@ def score_shipments(
     # callers that want historical features at scoring time must
     # pass a frame that already has them (e.g. from a feature
     # store).
-    feature_frame = fill_missing_for_scoring(shipments)
+    feature_frame = shipments.copy()
 
     # Predict the probability of being late.
     proba = model.predict_proba(feature_frame)

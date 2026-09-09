@@ -103,6 +103,18 @@ def split_by_duplicates(
     else:
         sort_exprs = [F.col(col).desc_nulls_last() for col in order_columns]
 
+    # Complete the ordering with a stable payload digest. Conflicting rows that
+    # tie on the business timestamps must still select the same survivor across
+    # Spark plans and reruns. Identical rows may tie because either survivor has
+    # the same payload.
+    payload_columns = sorted(column for column in df.columns if column not in key_columns)
+    if payload_columns:
+        payload_json = F.to_json(
+            F.struct(*[F.col(column) for column in payload_columns]),
+            options={"ignoreNullFields": "false"},
+        )
+        sort_exprs.append(F.sha2(payload_json, 256).desc_nulls_last())
+
     window_spec = Window.partitionBy(*key_columns).orderBy(*sort_exprs)
     ranked = df.withColumn("__dup_rank", F.row_number().over(window_spec))
 

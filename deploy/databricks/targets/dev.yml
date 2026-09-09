@@ -1,21 +1,19 @@
-# Per-target overrides for the dev environment.
-#
-# This file is auto-merged with the top-level ``databricks.yml`` when
-# the operator runs ``databricks bundle deploy --target dev``.
-#
-# The defaults are intentionally minimal — the workspace URL, the
-# cluster, and the storage paths are all overridable at deploy time.
-# No credentials, no cluster IDs, no real workspace URLs are committed.
-
-variables:
-  # The dev target uses the same wheel as the production target.
-  # Operators can override ``wheel_path`` to test a custom build.
-  wheel_path: "./dist/transport_shipment_etl-0.1.0-py3-none-any.whl"
-  # The dev env writes to the same Unity Catalog as prod but under
-  # the ``dev`` schema prefix.  Catalog and schema are variables so
-  # operators can substitute their own.
-  catalog_name: "supply_chain_dev"
-  bronze_schema: "bronze"
-  silver_schema: "silver"
-  gold_schema: "gold"
-  environment: "dev"
+# Development target overrides. Values remain maps because that is the target
+# variable shape accepted by the installed Databricks CLI schema.
+targets:
+  dev:
+    variables:
+      environment:
+        default: dev
+      catalog_name:
+        default: workspace
+      bronze_schema:
+        default: bronze_dev
+      silver_schema:
+        default: silver_dev
+      gold_schema:
+        default: gold_dev
+      file_schema:
+        default: default
+      volume_name:
+        default: transport_etl

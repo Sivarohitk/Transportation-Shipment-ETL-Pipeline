@@ -316,14 +316,18 @@ def run_quality_rules(context: dict[str, Any]) -> dict[str, Any]:
     invalid_count = int(invalid_df.count()) if invalid_frames else 0
 
     clean_df = df
-    primary_key = context.get("primary_key")
-    if (
-        invalid_frames
-        and isinstance(primary_key, list)
-        and all(col in df.columns for col in primary_key)
-    ):
-        invalid_keys = invalid_df.select(*primary_key).dropna().dropDuplicates()
-        clean_df = df.join(invalid_keys, on=primary_key, how="left_anti")
+    if invalid_frames:
+        # A business key can carry multiple operational versions. Remove only
+        # rows whose complete source payload failed a rule so one bad historical
+        # version cannot suppress a distinct valid update for the same key.
+        source_columns = list(df.columns)
+        invalid_rows = invalid_df.select(*source_columns).dropDuplicates()
+        source = df.alias("source")
+        rejected = invalid_rows.alias("rejected")
+        row_matches = F.lit(True)
+        for column in source_columns:
+            row_matches = row_matches & source[column].eqNullSafe(rejected[column])
+        clean_df = source.join(rejected, on=row_matches, how="left_anti").select("source.*")
 
     return {
         "status": "PASS" if not failed_rules else "FAIL",

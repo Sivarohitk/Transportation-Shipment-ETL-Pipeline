@@ -89,9 +89,20 @@ def sample_paths(project_root: Path) -> dict[str, Path]:
 
 @pytest.fixture(scope="function")
 def spark(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Any]:
-    """Create a local SparkSession for tests."""
+    """Create a local SparkSession or reuse a managed Spark Connect session."""
     pytest.importorskip("pyspark")
     from pyspark.sql import SparkSession
+
+    # Serverless Databricks wheel tasks expose their managed session through
+    # SPARK_REMOTE.  Configuring a local master in that process is invalid, and
+    # stopping the managed session would break the task.  Local and EMR-style
+    # test runs do not set SPARK_REMOTE and retain the original lifecycle below.
+    if os.environ.get("SPARK_REMOTE"):
+        spark_session = SparkSession.getActiveSession()
+        if spark_session is None:
+            raise RuntimeError("Databricks did not provide an active Spark session")
+        yield spark_session
+        return
 
     _cleanup_registered_spark_sessions()
 
@@ -142,7 +153,12 @@ def ingested_frames(spark: Any, sample_paths: dict[str, Path], tmp_path: Path) -
     from transport_etl.ingest.delivery_events import read_delivery_events_raw
     from transport_etl.ingest.shipments import read_shipments_raw
 
-    bad_records_base = tmp_path / "quarantine"
+    configured_quarantine = os.environ.get("TRANSPORT_ETL_TEST_QUARANTINE_BASE_PATH")
+    bad_records_base = (
+        f"{configured_quarantine.rstrip('/')}/{tmp_path.name}"
+        if configured_quarantine
+        else tmp_path / "quarantine"
+    )
 
     shipments_df = read_shipments_raw(
         spark=spark,

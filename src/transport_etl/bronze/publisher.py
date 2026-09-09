@@ -48,6 +48,7 @@ except ModuleNotFoundError:  # pragma: no cover
 from transport_etl.common.catalog import is_databricks, resolve_table_name
 from transport_etl.common.constants import (
     BRONZE_TABLE_NAMES,
+    DEFAULT_LOCAL_CURATED_BASE_PATH,
     TABLE_BRONZE_CARRIERS,
     TABLE_BRONZE_DELIVERY_EVENTS,
     TABLE_BRONZE_SHIPMENTS,
@@ -55,13 +56,6 @@ from transport_etl.common.constants import (
 from transport_etl.publish.hive_writer import write_partitioned_table
 
 LOGGER = logging.getLogger(__name__)
-
-
-def _require_spark() -> None:
-    """Ensure pyspark is available before executing Spark operations."""
-    if SparkSession is Any:  # type: ignore[comparison-overlap]
-        return
-    raise ImportError("pyspark is required for Bronze publishing")
 
 
 def _resolve_bronze_output_format(config: Mapping[str, Any]) -> str:
@@ -88,7 +82,7 @@ def _resolve_bronze_base_path(config: Mapping[str, Any]) -> str:
     staging = paths.get("staging_base_path") or paths.get("curated_base_path")
     if staging:
         return str(staging)
-    return "data/local/curated"
+    return DEFAULT_LOCAL_CURATED_BASE_PATH
 
 
 def publish_bronze_table(
@@ -113,10 +107,9 @@ def publish_bronze_table(
         table_name: Bronze table base name (one of ``BRONZE_TABLE_NAMES``).
         spark: Optional SparkSession used for Hive registration.  When
             ``None`` the writer attempts to read it from the DataFrame.
-        partitions: Partition columns.  Defaults to an empty list for
-            Bronze — Phase 4 Bronze is stored unpartitioned so a full
-            overwrite can deterministically replace the dataset for a
-            given run date.
+        partitions: Optional partition columns.  When omitted, the shared
+            writer applies the configured partition contract and fills
+            missing partition values.
         mode: Spark write mode (``"overwrite"`` or ``"append"``).
         writer_options: Optional Spark writer options (Parquet only).
         write_config: Optional write fallback configuration (Parquet only).
@@ -155,10 +148,11 @@ def publish_bronze_table(
     if repair_partitions is None:
         repair_partitions = output_format == "parquet"
 
+    normalized_base = bronze_base_path.rstrip("/\\")
     written = write_partitioned_table(
         df=df,
         table_name=resolved_table,
-        output_path=f"{bronze_base_path.rstrip('/\\')}/{table_name}",
+        output_path=f"{normalized_base}/{table_name}",
         partitions=bronze_partitions,
         mode=mode,
         spark=spark,

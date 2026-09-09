@@ -135,9 +135,10 @@ def build_kpi_delivery_daily(
         )
     )
 
-    delivered_denominator = F.greatest(
-        F.col("delivered_event_shipments"), F.col("delivered_shipments")
-    )
+    # All event metrics are assigned to the shipment pickup cohort by
+    # ``build_fct_delivery_event``.  Shipment facts therefore provide the
+    # single authoritative delivered denominator for this grain.
+    delivered_denominator = F.col("delivered_shipments")
 
     result = (
         base.withColumn(

@@ -82,7 +82,7 @@ def test_build_kpi_delivery_daily_matches_formulae(curated_frames: dict[str, obj
         .withColumn("total_delivery_events", F.coalesce(F.col("total_delivery_events"), F.lit(0)))
         .withColumn(
             "delivered_denominator",
-            F.greatest(F.col("delivered_shipments"), F.col("delivered_event_shipments")),
+            F.col("delivered_shipments"),
         )
         .withColumn(
             "exp_on_time_delivery_rate",

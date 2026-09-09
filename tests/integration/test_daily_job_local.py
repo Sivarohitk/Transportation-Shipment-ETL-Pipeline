@@ -41,6 +41,24 @@ def _read_csv_records(root: Path) -> list[dict[str, object]]:
     return records
 
 
+def _load_published_records(root: Path) -> list[dict[str, object]]:
+    """Read a published table without requiring another Spark JVM."""
+    parquet_files = list(root.rglob("*.parquet"))
+    if parquet_files:
+        import pandas as pd
+
+        return [
+            record
+            for path in parquet_files
+            for record in pd.read_parquet(path).to_dict(orient="records")
+        ]
+
+    json_records = _read_jsonl_records(root)
+    if json_records:
+        return json_records
+    return _read_csv_records(root)
+
+
 def _load_bronze_records(spark, root: Path) -> list[dict[str, object]]:
     """Load Bronze records from the Windows fallback directories."""
     parquet_files = list(root.rglob("*.parquet"))
@@ -97,6 +115,18 @@ def test_daily_job_local_end_to_end(
         has_csv_fallback = any((table_path / "_fallback_csv").rglob("*.csv"))
 
         assert has_parquet or has_json_fallback or has_csv_fallback
+
+    silver_shipments = _load_published_records(staging_base / "stg_shipments")
+    gold_shipments = _load_published_records(curated_base / "fct_shipment")
+    silver_by_id = {str(row["shipment_id"]): row for row in silver_shipments}
+    gold_by_id = {str(row["shipment_id"]): row for row in gold_shipments}
+
+    assert len(silver_by_id) == len(silver_shipments)
+    assert len(gold_by_id) == len(gold_shipments)
+    assert set(gold_by_id) == set(silver_by_id)
+    assert float(silver_by_id["SHP1006"]["shipping_cost_usd"]) == pytest.approx(415.0)
+    assert float(gold_by_id["SHP1006"]["shipping_cost_usd"]) == pytest.approx(415.0)
+    assert "SHP1011" not in gold_by_id
 
 
 def test_daily_job_local_writes_bronze_layer(

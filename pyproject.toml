@@ -10,12 +10,20 @@ readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "Transportation Data Engineering Team" }]
 dependencies = [
-  "pyspark==3.5.2",
   "PyYAML==6.0.2",
   "python-dateutil==2.9.0.post0",
+  "numpy==1.26.4",
+  "pandas==2.2.3",
+  "scikit-learn==1.5.2",
 ]
 
 [project.optional-dependencies]
+spark = [
+  "pyspark==3.5.2",
+]
+data-quality = [
+  "pytest==8.3.5",
+]
 dev = [
   "pytest==8.3.5",
   "pytest-cov==6.0.0",
@@ -26,6 +34,7 @@ dev = [
 [project.scripts]
 transport-etl = "transport_etl.main:main"
 transport-etl-ml = "transport_etl.ml.cli:main"
+transport-etl-data-quality = "transport_etl.jobs.run_data_quality:databricks_main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

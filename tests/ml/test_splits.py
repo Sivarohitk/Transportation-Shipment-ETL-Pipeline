@@ -102,14 +102,25 @@ class TestChronologicalSplit:
         )
         assert int(split["split"].value_counts().sum()) == 300
 
-    def test_does_not_shuffle_rows_with_same_pickup_ts(self) -> None:
-        # All rows share the same pickup_ts; the splitter must keep
-        # the input order.  Use a tiny min_split_size to avoid the
-        # 30-row-per-split guard.
+    def test_rejects_one_pickup_timestamp_cohort(self) -> None:
         df = _make_frame(50)
         df["pickup_ts"] = pd.Timestamp("2025-01-01", tz="UTC")
-        split = chronological_split(df, min_split_size=1)
-        assert list(split["shipment_id"]) == list(df["shipment_id"])
+        with pytest.raises(ValueError, match="timestamp-distinct cohorts"):
+            chronological_split(df, min_split_size=1)
+
+    def test_tied_pickup_cohort_never_crosses_split_boundary(self) -> None:
+        df = _make_frame(300)
+        df.loc[205:215, "pickup_ts"] = pd.Timestamp("2025-02-01", tz="UTC")
+
+        split = chronological_split(df)
+        tied_labels = split.loc[split["pickup_ts"] == pd.Timestamp("2025-02-01", tz="UTC"), "split"]
+
+        assert tied_labels.nunique() == 1
+        train = slice_split(split, SPLIT_TRAIN)
+        validation = slice_split(split, SPLIT_VALIDATION)
+        test = slice_split(split, SPLIT_TEST)
+        assert train["pickup_ts"].max() < validation["pickup_ts"].min()
+        assert validation["pickup_ts"].max() < test["pickup_ts"].min()
 
     def test_rejects_too_small_frame(self) -> None:
         df = _make_frame(5)

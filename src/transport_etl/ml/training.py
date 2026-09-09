@@ -65,6 +65,8 @@ from transport_etl.ml.constants import (
 )
 from transport_etl.ml.features import (
     feature_columns,
+    fill_missing_for_scoring,
+    scoring_fill_values,
 )
 
 LOGGER = logging.getLogger("transport_etl.ml.training")
@@ -126,6 +128,7 @@ class LateRiskModel:
     numeric_features: list[str] = field(default_factory=list)
     training_rows: int = 0
     positive_rate: float = 0.0
+    imputation_values: dict[str, float] = field(default_factory=dict)
 
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
         """Return the predicted ``P(is_late)`` for each row of ``X``.
@@ -143,10 +146,8 @@ class LateRiskModel:
                 f"Underlying pipeline of model {self.model_name!r} does "
                 f"not support predict_proba"
             )
-        # Impute nulls so the LR pipeline can predict.
-        from transport_etl.ml.features import fill_missing_for_scoring
-
-        filled = fill_missing_for_scoring(X)
+        # Apply only defaults learned from the chronological training split.
+        filled = fill_missing_for_scoring(X, fill_values=self.imputation_values)
         proba = self.pipeline.predict_proba(filled)
         # ``predict_proba`` returns a 2-D array of shape (n, 2); the
         # positive class is at index 1.
@@ -308,9 +309,8 @@ def train_model(
     # imputation is applied at predict time in
     # :meth:`LateRiskModel.predict_proba` to keep the contract
     # symmetric.
-    from transport_etl.ml.features import fill_missing_for_scoring
-
-    X_train = fill_missing_for_scoring(X_train)
+    imputation_values = scoring_fill_values(X_train)
+    X_train = fill_missing_for_scoring(X_train, fill_values=imputation_values)
     y_train = train_df[target_column].astype(int).to_numpy()
 
     preprocessor = _build_preprocessor(cat_cols, num_cols)
@@ -340,6 +340,7 @@ def train_model(
         numeric_features=num_cols,
         training_rows=len(train_df),
         positive_rate=positive_rate,
+        imputation_values=imputation_values,
     )
 
 

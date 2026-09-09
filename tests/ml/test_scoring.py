@@ -49,6 +49,7 @@ def _build_dataset(n: int, *, seed: int = 0) -> tuple[pd.DataFrame, pd.Series]:
             "origin_state": rng.choice(["CA", "TX"], size=n),
             "destination_state": rng.choice(["NV", "OH"], size=n),
             "promised_delivery_ts": [t + pd.Timedelta(hours=24) for t in pickup_ts],
+            "actual_delivery_ts": [t + pd.Timedelta(minutes=30) for t in pickup_ts],
             "distance_miles": rng.uniform(100, 1500, size=n),
             "shipping_cost_usd": rng.uniform(50, 2000, size=n),
             "region_code": "UNKNOWN",

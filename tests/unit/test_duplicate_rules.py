@@ -61,3 +61,24 @@ def test_split_by_duplicates_keeps_latest_record_per_key(spark) -> None:
     assert deduped_df.count() == 2
     assert duplicate_df.count() == 1
     assert kept_payload == "new"
+
+
+def test_split_by_duplicates_breaks_exact_timestamp_ties_deterministically(spark) -> None:
+    df = spark.createDataFrame(
+        [
+            ("SHP1", "payload-a", "2026-01-01T11:00:00Z"),
+            ("SHP1", "payload-b", "2026-01-01T11:00:00Z"),
+        ],
+        schema="shipment_id string, payload string, updated_at string",
+    )
+
+    winners = []
+    for partitions in (1, 2, 3):
+        deduped, _ = split_by_duplicates(
+            df=df.repartition(partitions),
+            key_columns=["shipment_id"],
+            order_by_columns=["updated_at"],
+        )
+        winners.append(deduped.select("payload").collect()[0]["payload"])
+
+    assert len(set(winners)) == 1

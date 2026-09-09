@@ -205,11 +205,6 @@ def _write_python_json_fallback(
     """Write JSONL fallback files using Python I/O and optional partition folders."""
     normalized_mode = _normalized_mode(mode)
     destination_path = Path(destination)
-    if normalized_mode == "overwrite" and destination_path.exists():
-        shutil.rmtree(destination_path, ignore_errors=True)
-
-    ensure_local_dir(destination_path)
-
     columns = [str(col) for col in df.columns]
     rows = [row.asDict(recursive=True) for row in df.collect()]
     partitions = [column for column in (partition_by or []) if column in columns]
@@ -221,6 +216,14 @@ def _write_python_json_fallback(
             grouped_rows.setdefault(key, []).append(row)
     else:
         grouped_rows[tuple()] = rows
+
+    _clear_python_fallback_overwrite_targets(
+        destination=destination,
+        normalized_mode=normalized_mode,
+        partitions=partitions,
+        partition_keys=grouped_rows,
+    )
+    ensure_local_dir(destination_path)
 
     for key, partition_rows in grouped_rows.items():
         target_dir = (
@@ -247,11 +250,6 @@ def _write_python_csv_fallback(
     """Write CSV fallback files using Python I/O and optional partition folders."""
     normalized_mode = _normalized_mode(mode)
     destination_path = Path(destination)
-    if normalized_mode == "overwrite" and destination_path.exists():
-        shutil.rmtree(destination_path, ignore_errors=True)
-
-    ensure_local_dir(destination_path)
-
     columns = [str(col) for col in df.columns]
     rows = [row.asDict(recursive=True) for row in df.collect()]
     partitions = [column for column in (partition_by or []) if column in columns]
@@ -263,6 +261,14 @@ def _write_python_csv_fallback(
             grouped_rows.setdefault(key, []).append(row)
     else:
         grouped_rows[tuple()] = rows
+
+    _clear_python_fallback_overwrite_targets(
+        destination=destination,
+        normalized_mode=normalized_mode,
+        partitions=partitions,
+        partition_keys=grouped_rows,
+    )
+    ensure_local_dir(destination_path)
 
     for key, partition_rows in grouped_rows.items():
         target_dir = (
@@ -279,6 +285,31 @@ def _write_python_csv_fallback(
             for row in partition_rows:
                 normalized = {col: _json_safe_row_value(row.get(col)) for col in columns}
                 writer.writerow(normalized)
+
+
+def _clear_python_fallback_overwrite_targets(
+    *,
+    destination: str,
+    normalized_mode: str,
+    partitions: list[str],
+    partition_keys: Mapping[tuple[str, ...], Any],
+) -> None:
+    """Apply Spark-like dynamic overwrite semantics to fallback files."""
+    if normalized_mode != "overwrite":
+        return
+
+    destination_path = Path(destination)
+    if not partitions:
+        if destination_path.exists():
+            shutil.rmtree(destination_path, ignore_errors=True)
+        return
+
+    for key in partition_keys:
+        partition_path = destination_path
+        for column, value in zip(partitions, key):
+            partition_path = partition_path / f"{column}={value}"
+        if partition_path.exists():
+            shutil.rmtree(partition_path, ignore_errors=True)
 
 
 def write_invalid_records_with_fallback(
@@ -369,6 +400,11 @@ def read_csv(
         raise FileNotFoundError(f"Input CSV path not found: {path}")
 
     csv_options = {**DEFAULT_CSV_OPTIONS, **_normalize_options(options)}
+    if any(key.lower() == "badrecordspath" for key in csv_options):
+        # Databricks serverless rejects an explicit CSV mode together with
+        # badRecordsPath. Spark's default mode is PERMISSIVE, so omitting this
+        # redundant option preserves row-level quarantine behavior.
+        csv_options = {key: value for key, value in csv_options.items() if key.lower() != "mode"}
     reader = spark.read.options(**csv_options)
     if schema is not None:
         reader = reader.schema(schema)

@@ -32,12 +32,11 @@ contract is enforced in code at three boundaries:
    column that appears in the forbidden list
    (`FORBIDDEN_FEATURE_COLUMNS`) and re-runs
    `assert_no_leakage` on the output.
-2. **Scoring** — `score_shipments` re-runs
-   `assert_no_leakage` on the *output* frame to make sure the
-   decision-support columns never include a leakage column.
-3. **Tests** — the test suite asserts that the forbidden list is
-   non-empty, that every entry is a real string, and that the
-   guard raises on any forbidden column.
+2. **Training** — estimators use fixed categorical and numeric feature
+   allowlists; identifiers, labels, and output columns are not selected
+   dynamically from the input frame.
+3. **Tests** — the suite checks the forbidden list, tied pickup cohorts,
+   outcome availability, and missing route groups.
 
 The forbidden columns are documented in
 `transport_etl.ml.leakage_audit.FORBIDDEN_FEATURE_COLUMNS`:
@@ -74,10 +73,10 @@ The forbidden columns are documented in
 | `promised_transit_hours` | derived | `(promised - pickup) / 1h`, pure function |
 | `distance_miles` | shipment | Known at booking |
 | `shipping_cost_usd` | shipment | Known at booking |
-| `carrier_historical_late_rate` | computed | **Strictly chronological**: only uses shipments whose `pickup_ts` is before the current row |
-| `carrier_historical_shipment_count` | computed | Same chronological rule |
-| `route_historical_late_rate` | computed | Same chronological rule |
-| `route_historical_shipment_count` | computed | Same chronological rule |
+| `carrier_historical_late_rate` | computed | Uses only shipments whose pickup and observed delivery both precede the current pickup |
+| `carrier_historical_shipment_count` | computed | Count of those observable carrier outcomes |
+| `route_historical_late_rate` | computed | Uses the same as-of rule and preserves missing route groups |
+| `route_historical_shipment_count` | computed | Count of those observable route outcomes |
 
 ### Why chronological validation is necessary
 
@@ -129,16 +128,16 @@ pipeline and `LateRiskModel.load(path)` restores it.
 
 ## Risk Bands
 
-The decision-support output categorises the predicted probability
-into four bands.  The thresholds are **documented business rules**,
-not magic numbers.
+The decision-support output categorises predicted probability into four
+demonstration bands. These boundaries have not been calibrated or approved as
+production business thresholds.
 
 | Band | Probability range | Rationale |
 |---|---|---|
-| `LOW` | `[0.00, 0.10)` | Carriers / routes with a sub-10% historical late rate and a routine booking. |
-| `MEDIUM` | `[0.10, 0.25)` | Late rate comparable to industry average; flag for normal review. |
-| `HIGH` | `[0.25, 0.50)` | One in four shipments of this kind is late historically; manual follow-up recommended. |
-| `CRITICAL` | `[0.50, 1.00]` | Majority of comparable shipments are late; proactive intervention warranted. |
+| `LOW` | `[0.00, 0.10)` | Lowest model-score band |
+| `MEDIUM` | `[0.10, 0.25)` | Intermediate model-score band |
+| `HIGH` | `[0.25, 0.50)` | Elevated model-score band for demonstration review |
+| `CRITICAL` | `[0.50, 1.00]` | Highest model-score band for demonstration review |
 
 The **default decision threshold** for converting `risk_probability`
 into the binary `predicted_late` column is `0.25` (the boundary
@@ -157,22 +156,22 @@ synthetic generator's default 5,000-shipment output
 | Split | rows | positives | pos rate | AUC-ROC | PR-AUC | P@def | R@def | F1@def |
 |---|---|---|---|---|---|---|---|---|
 | **Logistic Regression** | | | | | | | | |
-| train | 3,500 | 648 | 18.5% | 0.621 | 0.273 | 0.186 | 1.000 | 0.313 |
-| validation | 750 | 146 | 19.5% | 0.491 | 0.200 | 0.195 | 1.000 | 0.326 |
-| **test** | **750** | **150** | **20.0%** | **0.560** | **0.255** | **0.200** | **1.000** | **0.333** |
+| train | 3,500 | 648 | 18.5% | 0.619 | 0.271 | 0.186 | 1.000 | 0.313 |
+| validation | 750 | 146 | 19.5% | 0.493 | 0.202 | 0.195 | 1.000 | 0.326 |
+| **test** | **750** | **150** | **20.0%** | **0.558** | **0.253** | **0.200** | **1.000** | **0.333** |
 | **HistGradient Boosting** | | | | | | | | |
-| train | 3,500 | 648 | 18.5% | 0.935 | 0.798 | 0.674 | 0.750 | 0.710 |
-| validation | 750 | 146 | 19.5% | 0.512 | 0.202 | 0.204 | 0.699 | 0.316 |
-| **test** | **750** | **150** | **20.0%** | **0.515** | **0.204** | **0.206** | **0.607** | **0.307** |
+| train | 3,500 | 648 | 18.5% | 0.943 | 0.807 | 0.682 | 0.764 | 0.721 |
+| validation | 750 | 146 | 19.5% | 0.485 | 0.196 | 0.167 | 0.370 | 0.230 |
+| **test** | **750** | **150** | **20.0%** | **0.531** | **0.224** | **0.208** | **0.440** | **0.282** |
 
 Primary reported numbers are the **test** row.  Observations:
 
 - **Both models overfit.**  The training AUC is much higher than
-  the test AUC (0.62 vs 0.56 for LR; 0.94 vs 0.52 for GBT).  This
+  the test AUC (0.62 vs 0.56 for LR; 0.94 vs 0.53 for GBT).  This
   is honest: the synthetic dataset has enough noise that the GBT
   memorises the training set.
 - **The linear baseline is competitive with the tree.**  LR's
-  test F1 (0.333) is actually slightly higher than GBT's (0.307)
+  test F1 (0.333) is higher than GBT's (0.282)
   on this split.  This is a sign that the booking-time features
   do not carry enough non-linear signal to make the GBT pay off.
 - **High recall, low precision.**  Both models default to flagging
@@ -181,17 +180,8 @@ Primary reported numbers are the **test** row.  Observations:
 - **Class imbalance is real.**  ~20% of the test shipments are
   late; the dataset is not skewed to a trivial class.
 
-### Threshold trade-offs (Logistic Regression, test split)
-
-| Threshold | Precision | Recall | F1 |
-|---|---|---|---|
-| 0.05 | 0.20 | 1.00 | 0.33 |
-| 0.10 | 0.20 | 1.00 | 0.33 |
-| 0.20 | 0.20 | 1.00 | 0.33 |
-| **0.25 (default)** | **0.20** | **1.00** | **0.33** |
-| 0.30 | 0.20 | 0.99 | 0.33 |
-| 0.40 | 0.21 | 0.94 | 0.35 |
-| 0.50 | 0.23 | 0.83 | 0.36 |
+The generated evaluation JSON contains the complete threshold trade-off table;
+no threshold has been validated as an operational decision limit.
 
 (Based on the same run; values may shift slightly between seeds.)
 
@@ -262,7 +252,7 @@ when the CLI is invoked.  The threshold table is included in
 - **Recall is 100% at the default threshold for LR.**  The model
   is *too* generous — every shipment ends up in HIGH or
   CRITICAL.  The band counts for the 5,000-shipment run are
-  approximately 0 / 11 / 2,622 / 2,367 — almost no LOW or MEDIUM
+  0 / 8 / 2,622 / 2,370 — no LOW and very few MEDIUM
   shipments.  Operators who use this output should pick a higher
   threshold or rely on the score probability rather than the band.
 - **The 5,000-shipment run has only 11 MEDIUM-band shipments.**
@@ -306,7 +296,7 @@ The CLI writes:
 |---|---|
 | `tests/ml/test_leakage_audit.py` | Forbidden column list, leakage guard behavior, custom override |
 | `tests/ml/test_splits.py` | Chronological ordering, fraction normalization, minimum-split guard, split_indices consistency |
-| `tests/ml/test_features.py` | Required column enforcement, time feature derivation, **chronological correctness of historical aggregates**, scoring-time fill |
+| `tests/ml/test_features.py` | Required columns, time features, tied-pickup exclusion, outcome-availability history, missing route groups, scoring-time fill |
 | `tests/ml/test_training.py` | LR + GBT fit, predict, threshold, save/load round-trip, reproducibility, deterministic GBT with random_state |
 | `tests/ml/test_evaluation.py` | Risk-band classification, evaluation report fields, threshold trade-offs, calibration buckets, degenerate inputs (NaN, all-positive, all-negative) |
 | `tests/ml/test_scoring.py` | Output schema, risk probability in `[0, 1]`, band classification, predicted_late 0/1, summary dict, no-leakage on output |

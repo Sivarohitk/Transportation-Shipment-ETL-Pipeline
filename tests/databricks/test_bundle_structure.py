@@ -4,8 +4,7 @@ These tests verify that:
 
 - the YAML files in ``deploy/databricks/`` are syntactically
   valid and loadable;
-- the bundle structure matches the documented schema
-  (bundle, targets, resources, variables, python);
+- the bundle structure matches the current CLI schema;
 - the Lakeflow job definition references only entry points that
   exist in the existing Python package — no notebook copies of
   the pipeline are introduced (AGENTS.md rule 1);
@@ -55,32 +54,26 @@ class TestBundleYamlStructure:
     def test_bundle_section_present(self, bundle_yaml) -> None:
         assert "bundle" in bundle_yaml
         assert "name" in bundle_yaml["bundle"]
-        assert "version" in bundle_yaml["bundle"]
         # The bundle name is the documented one.
         assert bundle_yaml["bundle"]["name"] == "transport_etl_bundle"
 
     def test_include_patterns_present(self, bundle_yaml) -> None:
-        # The bundle must include the source, configs, schemas, and
-        # resources.  AGENTS.md rule 6 forbids hard-coded storage
-        # paths so the ``include`` patterns are the only source
-        # reference.
+        # Top-level include is only for bundle configuration fragments.
         assert "include" in bundle_yaml
         assert isinstance(bundle_yaml["include"], list)
         joined = "\n".join(bundle_yaml["include"])
-        # The pipeline code must be in the bundle.
-        assert "transport_etl" in joined
-        # The schemas must be in the bundle.
-        assert "schemas" in joined
-        # The job resource must be in the bundle.
         assert "resources" in joined
+        assert "targets" in joined
+        assert "transport_etl" not in joined
+        assert "pyproject" not in joined
 
-    def test_exclude_blocks_generated_and_local(self, bundle_yaml) -> None:
-        # Per AGENTS.md rule 13, generated / local artefacts must
-        # not ship to a production workspace.
-        assert "exclude" in bundle_yaml
-        joined = "\n".join(bundle_yaml["exclude"])
-        assert "data/generated" in joined
-        assert "__pycache__" in joined
+    def test_sync_covers_runtime_files(self, bundle_yaml) -> None:
+        sync = bundle_yaml["sync"]
+        paths = set(sync["paths"])
+        assert "../../config" in paths
+        assert "../../tests" in paths
+        assert "../../data/sample" in paths
+        assert "../../src" not in paths
 
     def test_variables_expose_catalog_and_schemas(self, bundle_yaml) -> None:
         # Catalog, schema, paths are exposed as variables per
@@ -93,15 +86,15 @@ class TestBundleYamlStructure:
         # The ML entry point is exposed as a variable so it can be
         # pinned in tests.
         assert "ml_entry_point" in variables
-        assert variables["ml_entry_point"] == "transport-etl-ml"
+        assert variables["ml_entry_point"]["default"] == "transport-etl-ml"
+        for name, value in variables.items():
+            assert isinstance(value, dict), f"variable {name} must use current map syntax"
 
-    def test_python_build_commands_present(self, bundle_yaml) -> None:
-        # The bundle builds a wheel locally.  The wheel path is
-        # git-ignored; the build runs on every ``databricks bundle
-        # deploy``.
-        assert "python" in bundle_yaml
-        assert "build_commands" in bundle_yaml["python"]
-        joined = "\n".join(bundle_yaml["python"]["build_commands"])
+    def test_artifact_builds_from_repository_root(self, bundle_yaml) -> None:
+        artifact = bundle_yaml["artifacts"]["python_wheel"]
+        assert artifact["type"] == "whl"
+        assert artifact["path"] == "../.."
+        joined = artifact["build"]
         assert "pip wheel" in joined
 
     def test_targets_dev_and_prod(self, bundle_yaml) -> None:
@@ -128,12 +121,10 @@ class TestBundleYamlStructure:
                 f"databricks.yml contains forbidden term {term!r} " "in a non-comment line"
             )
 
-    def test_host_is_placeholder_only(self) -> None:
-        # The workspace host must be a placeholder in
-        # ``databricks.yml`` — the per-target files inherit the
-        # host unless they override it (they don't, by design).
+    def test_workspace_host_is_not_committed(self) -> None:
         text = (BUNDLE_ROOT / "databricks.yml").read_text(encoding="utf-8")
-        assert "<your-workspace>" in text, "databricks.yml must use a placeholder workspace host"
+        assert "workspace:" not in text
+        assert "cloud.databricks.com" not in text
 
 
 class TestLakeflowJobYamlStructure:
@@ -203,8 +194,8 @@ class TestLakeflowJobYamlStructure:
         bundle_yaml = (BUNDLE_ROOT / "databricks.yml").read_text(encoding="utf-8")
         bundle = yaml.safe_load(bundle_yaml)
         variables = bundle["variables"]
-        assert variables["etl_entry_point"] == "transport-etl"
-        assert variables["ml_entry_point"] == "transport-etl-ml"
+        assert variables["etl_entry_point"]["default"] == "transport-etl"
+        assert variables["ml_entry_point"]["default"] == "transport-etl-ml"
 
         job = job_yaml["resources"]["jobs"]["transport_etl_job"]
         # The Bronze+Silver+Gold task references the ETL entry-point
@@ -216,30 +207,34 @@ class TestLakeflowJobYamlStructure:
             elif task["task_key"] == "score_late_risk":
                 assert entry_point == "${var.ml_entry_point}"
             elif task["task_key"] == "data_quality_checks":
-                # The data-quality task shells out to ``pytest``
-                # because there is no dedicated console script for
-                # it.  The bundle must still invoke the existing
-                # test suite (not duplicate the assertions into a
-                # notebook).
-                assert entry_point == "sh"
-                # The pytest invocation is present in the
-                # parameters.
+                assert entry_point == "${var.dq_entry_point}"
                 params = task["python_wheel_task"]["parameters"]
                 assert any(
-                    "pytest" in str(p) for p in params
-                ), "data-quality task must invoke pytest"
+                    "tests/data_quality" in str(p) for p in params
+                ), "data-quality task must target the synced test suite"
+                assert params[params.index("--resource-base-path") + 1] == (
+                    "${workspace.file_path}"
+                )
+                assert params[params.index("--quarantine-base-path") + 1] == (
+                    "${var.audit_base_path}/data_quality/quarantine"
+                )
             else:  # pragma: no cover - defensive
                 pytest.fail(f"unexpected task {task['task_key']!r}")
 
-    def test_job_cluster_uses_serverless_compatible_settings(self, job_yaml) -> None:
+    def test_job_uses_serverless_environment(self, job_yaml) -> None:
         job = job_yaml["resources"]["jobs"]["transport_etl_job"]
-        cluster = job["job_clusters"][0]["new_cluster"]
-        # The runtime is pinned to a known LTS Databricks Runtime
-        # so the test suite is reproducible across deployments.
-        assert cluster["spark_version"].startswith("14.3")
-        # Single-user data-security mode is the documented
-        # production setting for Lakeflow jobs.
-        assert cluster["data_security_mode"] == "SINGLE_USER"
+        assert "job_clusters" not in job
+        assert job["environments"][0]["environment_key"] == "serverless"
+        dependencies = job["environments"][0]["spec"]["dependencies"]
+        assert any(
+            str(item).endswith("transport_shipment_etl-0.1.0-py3-none-any.whl")
+            for item in dependencies
+        )
+        for task in job["tasks"]:
+            assert task["environment_key"] == "serverless"
+            assert "job_cluster_key" not in task
+            assert "new_cluster" not in task
+            assert "libraries" not in task
 
     def test_job_exposes_run_date_parameter(self, job_yaml) -> None:
         job = job_yaml["resources"]["jobs"]["transport_etl_job"]
@@ -247,6 +242,21 @@ class TestLakeflowJobYamlStructure:
         # backfill a specific day.
         param_names = {p["name"] for p in job["parameters"]}
         assert "run_date" in param_names
+
+    def test_etl_task_uses_synced_runtime_resources(self, job_yaml) -> None:
+        """The installed wheel must resolve config, schemas, and SQL from sync."""
+        job = job_yaml["resources"]["jobs"]["transport_etl_job"]
+        task = next(
+            item for item in job["tasks"] if item["task_key"] == "ingest_bronze_silver_gold"
+        )
+        params = task["python_wheel_task"]["parameters"]
+
+        assert params[params.index("--config") + 1] == (
+            "${workspace.file_path}/config/databricks.yaml"
+        )
+        assert params[params.index("--config-dir") + 1] == "${workspace.file_path}/config"
+        assert params[params.index("--resource-base-path") + 1] == "${workspace.file_path}"
+        assert "--raise-on-error" in params
 
 
 class TestTargetOverrides:
@@ -269,12 +279,14 @@ class TestTargetOverrides:
         # bundle level (``databricks.yml``) so a target that does
         # not override them inherits the default — that is the
         # documented behavior.
-        data, _ = target_yaml
-        assert "variables" in data
+        data, path = target_yaml
+        target_name = path.stem
+        assert "targets" in data
+        assert target_name in data["targets"]
         # The target exposes the catalog- and environment-related
         # overrides; the storage paths are inherited from
         # ``databricks.yml`` when not explicitly set.
-        variables = data["variables"]
+        variables = data["targets"][target_name]["variables"]
         # The target exposes the catalog name and the environment
         # label (used for tagging).
         assert "catalog_name" in variables
@@ -282,6 +294,8 @@ class TestTargetOverrides:
         # Bronze / silver / gold schema names are exposed.
         for key in ("bronze_schema", "silver_schema", "gold_schema"):
             assert key in variables
+        for name, value in variables.items():
+            assert isinstance(value, dict), f"target variable {name} must use map syntax"
 
     def test_target_has_no_real_credentials(self, target_yaml) -> None:
         _, path = target_yaml
@@ -334,6 +348,7 @@ class TestEntryPointsExist:
         pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
         assert "transport-etl = " in pyproject
         assert "transport-etl-ml = " in pyproject
+        assert "transport-etl-data-quality = " in pyproject
 
 
 # ---------------------------------------------------------------------------

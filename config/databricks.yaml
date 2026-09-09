@@ -7,9 +7,6 @@ runtime:
 spark:
   profile: databricks
   app_name: supply-chain-lakehouse
-  # On Databricks, the cluster already provides a SparkSession.
-  # enable_hive_support is intentionally false; Unity Catalog is accessed
-  # through the existing session without enableHiveSupport().
   enable_hive_support: false
   conf:
     spark.sql.shuffle.partitions: "200"
@@ -17,34 +14,29 @@ spark:
     spark.sql.sources.partitionOverwriteMode: dynamic
     spark.sql.session.timeZone: UTC
 
-# Storage paths for Databricks (DBFS or Unity Catalog volumes).
-# Override at runtime via CLI --raw-base-path / --curated-base-path or
-# environment variables injected by the cluster/job configuration.
+# File-based inputs, quarantine records, audit output, and the existing ML CLI
+# use a Unity Catalog Volume. The bundle supplies target-specific overrides.
+# The catalog/schema/Volume must already exist; Phase 9.1 does not provision it.
 paths:
-  raw_base_path: dbfs:/mnt/transport/raw
-  staging_base_path: dbfs:/mnt/transport/staging
-  curated_base_path: dbfs:/mnt/transport/curated
-  audit_base_path: dbfs:/mnt/transport/logs
-  reference_base_path: dbfs:/mnt/transport/reference
+  raw_base_path: /Volumes/workspace/default/transport_etl/raw
+  staging_base_path: /Volumes/workspace/default/transport_etl/staging
+  curated_base_path: /Volumes/workspace/default/transport_etl/curated
+  audit_base_path: /Volumes/workspace/default/transport_etl/audit
+  reference_base_path: /Volumes/workspace/default/transport_etl/reference
 
-# Unity Catalog configuration (Databricks only).
-# catalog and schema names are configuration-driven; never hardcode them in code.
+# Bronze, Silver, and Gold are managed Delta tables. Bundle task arguments can
+# override every identifier without changing this file.
 unity_catalog:
-  catalog: supply_chain
-  bronze_schema: bronze
-  silver_schema: silver
-  gold_schema: gold
+  catalog: workspace
+  bronze_schema: bronze_dev
+  silver_schema: silver_dev
+  gold_schema: gold_dev
 
 io:
   curated_outputs:
-    # Delta is the target format for Databricks; writers must check spark.profile
-    # before switching from Parquet to Delta.  This key signals intent only;
-    # Delta write logic is implemented in a later phase.
     format: delta
 
 hive:
-  # Hive-style registration (MSCK REPAIR TABLE) is not applicable on Databricks
-  # Unity Catalog.  Tables are managed through the Delta write path.
   register_tables: false
   repair_partitions: false
 

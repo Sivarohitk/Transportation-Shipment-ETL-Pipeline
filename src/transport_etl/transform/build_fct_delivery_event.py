@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from transport_etl.common.constants import DELIVERY_EXCEPTION_EVENT_TYPES
+
 try:
     from pyspark.sql import DataFrame
     from pyspark.sql import functions as F
@@ -158,7 +160,10 @@ def build_fct_delivery_event(
         .withColumn(
             "p_date",
             F.coalesce(
-                F.to_date(F.col("event_ts")), F.to_date(F.col("updated_at")), F.current_date()
+                F.to_date(F.col("pickup_ts")),
+                F.to_date(F.col("event_ts")),
+                F.to_date(F.col("updated_at")),
+                F.current_date(),
             ),
         )
         .withColumn(
@@ -174,7 +179,10 @@ def build_fct_delivery_event(
         .withColumn("delay_minutes", _delay_minutes_expr("event_ts", "promised_delivery_ts"))
         .withColumn(
             "exception_flag",
-            F.when(F.col("event_type").isin("EXCEPTION", "HOLD"), F.lit(1)).otherwise(F.lit(0)),
+            F.when(
+                F.col("event_type").isin(list(DELIVERY_EXCEPTION_EVENT_TYPES)),
+                F.lit(1),
+            ).otherwise(F.lit(0)),
         )
         .withColumn(
             "transit_time_hours",

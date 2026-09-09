@@ -8,8 +8,10 @@ import uuid
 from pathlib import Path
 from typing import Any, Mapping
 
+from transport_etl.common.catalog import is_databricks, resolve_table_name
 from transport_etl.common.config import load_config
 from transport_etl.common.constants import (
+    DEFAULT_LOCAL_CURATED_BASE_PATH,
     TABLE_AGG_SHIPMENT_DAILY,
     TABLE_DIM_CARRIER,
     TABLE_FCT_DELIVERY_EVENT,
@@ -27,9 +29,22 @@ from transport_etl.publish.hive_writer import write_partitioned_table
 from transport_etl.publish.partitions import required_partition_columns
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-SQL_STAGING_DIR = PROJECT_ROOT / "sql" / "staging"
 _DATED_CSV_PATTERN = re.compile(r"_(\d{4}-\d{2}-\d{2})\.csv$")
 _RAW_ENTITIES = ("shipments", "carriers", "delivery_events")
+
+
+def _resolve_gold_write_target(config: Mapping[str, Any], table_name: str) -> tuple[str, str]:
+    """Return the target identifier and format for a Gold publication."""
+    if is_databricks(config):
+        return resolve_table_name(config, "gold", table_name), "delta"
+    return table_name, "parquet"
+
+
+def _resolve_runtime_resource_paths(config: Mapping[str, Any]) -> tuple[Path, Path]:
+    """Resolve schema and staging-SQL directories without changing local defaults."""
+    runtime = config.get("runtime", {}) if isinstance(config.get("runtime"), Mapping) else {}
+    resource_root = Path(str(runtime.get("resource_base_path", PROJECT_ROOT)))
+    return resource_root / "config" / "schemas", resource_root / "sql" / "staging"
 
 
 def _join_storage_path(base_path: str, *parts: str) -> str:
@@ -134,11 +149,6 @@ def _resolve_entity_source_path(raw_base_path: str, entity: str, batch_date: str
     if path_exists(undated_file):
         return undated_file
 
-    if not is_cloud_path(raw_base_path):
-        candidates = sorted(Path(raw_base_path).glob(f"{entity}_*.csv"), reverse=True)
-        if candidates:
-            return str(candidates[0])
-
     raise FileNotFoundError(
         f"Raw source not found for entity='{entity}', date='{batch_date}', base='{raw_base_path}'"
     )
@@ -218,17 +228,6 @@ def _schema_for_drift(schema_def: Mapping[str, Any]) -> dict[str, Any]:
     return {"columns": normalized_columns}
 
 
-def _resolve_clean_df(quality_result: Mapping[str, Any], fallback_df: Any) -> Any:
-    """Return quality-cleaned DataFrame when available, else the fallback DataFrame."""
-    failed_rules = {str(rule) for rule in quality_result.get("failed_rules", [])}
-    if failed_rules and failed_rules.issubset({"duplicate_keys"}):
-        # Keep duplicate rows for downstream deterministic dedupe logic.
-        return fallback_df
-
-    cleaned = quality_result.get("clean_df")
-    return cleaned if cleaned is not None else fallback_df
-
-
 def _blocking_quality_failures(
     failed_rules: list[str],
     quality_config: Mapping[str, Any],
@@ -252,6 +251,7 @@ def _blocking_quality_failures(
 
 def _run_staging_sql(
     spark: Any,
+    sql_dir: Path,
     sql_file_name: str,
     raw_view_name: str,
     staging_view_name: str,
@@ -259,7 +259,7 @@ def _run_staging_sql(
 ) -> Any:
     """Run a staging SQL file against a supplied raw temp view."""
     input_df.createOrReplaceTempView(raw_view_name)
-    query = _load_sql_file(SQL_STAGING_DIR / sql_file_name)
+    query = _load_sql_file(sql_dir / sql_file_name)
     staged_df = spark.sql(query)
     staged_df.createOrReplaceTempView(staging_view_name)
     return staged_df
@@ -301,9 +301,10 @@ def _execute_daily_flow(
     raw_base_path = str(paths.get("raw_base_path", "data/sample/raw"))
     reference_base_path = str(paths.get("reference_base_path", "data/sample/reference"))
     staging_base_path = str(paths.get("staging_base_path", "data/local/staging"))
-    curated_base_path = str(paths.get("curated_base_path", "data/local/curated"))
+    curated_base_path = str(paths.get("curated_base_path", DEFAULT_LOCAL_CURATED_BASE_PATH))
 
     runtime_config = config.get("runtime", {}) if isinstance(config.get("runtime"), Mapping) else {}
+    schema_dir, staging_sql_dir = _resolve_runtime_resource_paths(config)
     quality_config = config.get("quality", {}) if isinstance(config.get("quality"), Mapping) else {}
     io_config = config.get("io", {}) if isinstance(config.get("io"), Mapping) else {}
     hive_config = config.get("hive", {}) if isinstance(config.get("hive"), Mapping) else {}
@@ -327,8 +328,6 @@ def _execute_daily_flow(
         "execution_mode": str(spark_config.get("profile", "local")),
     }
 
-    runtime_fail_fast = bool(runtime_config.get("fail_fast", True))
-
     shipments_source = _resolve_entity_source_path(raw_base_path, "shipments", batch_date)
     carriers_source = _resolve_entity_source_path(raw_base_path, "carriers", batch_date)
     events_source = _resolve_entity_source_path(raw_base_path, "delivery_events", batch_date)
@@ -349,26 +348,31 @@ def _execute_daily_flow(
         region_lookup_source,
     )
 
-    shipments_schema = load_shipments_schema_definition()
-    carriers_schema = load_carriers_schema_definition()
-    delivery_events_schema = load_delivery_events_schema_definition()
+    shipments_schema = load_shipments_schema_definition(schema_dir / "shipments.schema.json")
+    carriers_schema = load_carriers_schema_definition(schema_dir / "carriers.schema.json")
+    delivery_events_schema = load_delivery_events_schema_definition(
+        schema_dir / "delivery_events.schema.json"
+    )
 
     shipments_raw_df = read_shipments_raw(
         spark=spark,
         source_path=shipments_source,
         bad_records_path=ingest_bad_path,
+        schema_def=shipments_schema,
         bad_record_write_config=invalid_record_write_config,
     )
     carriers_raw_df = read_carriers_raw(
         spark=spark,
         source_path=carriers_source,
         bad_records_path=ingest_bad_path,
+        schema_def=carriers_schema,
         bad_record_write_config=invalid_record_write_config,
     )
     events_raw_df = read_delivery_events_raw(
         spark=spark,
         source_path=events_source,
         bad_records_path=ingest_bad_path,
+        schema_def=delivery_events_schema,
         bad_record_write_config=invalid_record_write_config,
     )
 
@@ -400,7 +404,7 @@ def _execute_daily_flow(
             "primary_key": shipments_schema.get("primary_key"),
             "quarantine_path": quality_bad_path,
             "quarantine_write_config": invalid_record_write_config,
-            "fail_fast": runtime_fail_fast,
+            "fail_fast": False,
             "logger": logger,
         }
     )
@@ -416,7 +420,7 @@ def _execute_daily_flow(
             "primary_key": carriers_schema.get("primary_key"),
             "quarantine_path": quality_bad_path,
             "quarantine_write_config": invalid_record_write_config,
-            "fail_fast": runtime_fail_fast,
+            "fail_fast": False,
             "logger": logger,
         }
     )
@@ -441,7 +445,7 @@ def _execute_daily_flow(
             "primary_key": delivery_events_schema.get("primary_key"),
             "quarantine_path": quality_bad_path,
             "quarantine_write_config": invalid_record_write_config,
-            "fail_fast": runtime_fail_fast,
+            "fail_fast": False,
             "logger": logger,
         }
     )
@@ -469,102 +473,10 @@ def _execute_daily_flow(
         else:
             logger.info("Quality result entity=%s status=PASS", entity)
 
-        if blocking and runtime_fail_fast:
+        if blocking:
             raise ValueError(f"Blocking quality failures for entity '{entity}': {blocking}")
 
-    shipments_clean_df = _resolve_clean_df(shipments_quality, shipments_raw_df)
-    carriers_clean_df = _resolve_clean_df(carriers_quality, carriers_raw_df)
-    events_clean_df = _resolve_clean_df(events_quality, events_raw_df)
-
-    stg_shipments_df = _run_staging_sql(
-        spark=spark,
-        sql_file_name="stg_shipments.sql",
-        raw_view_name="raw_shipments",
-        staging_view_name="stg_shipments",
-        input_df=shipments_clean_df,
-    )
-    stg_carriers_df = _run_staging_sql(
-        spark=spark,
-        sql_file_name="stg_carriers.sql",
-        raw_view_name="raw_carriers",
-        staging_view_name="stg_carriers",
-        input_df=carriers_clean_df,
-    )
-    stg_events_df = _run_staging_sql(
-        spark=spark,
-        sql_file_name="stg_delivery_events.sql",
-        raw_view_name="raw_delivery_events",
-        staging_view_name="stg_delivery_events",
-        input_df=events_clean_df,
-    )
-
-    logger.info("Staging SQL complete; running standardization and region enrichment")
-
-    stg_shipments_std_df = standardize_columns(stg_shipments_df)
-    stg_carriers_std_df = standardize_columns(stg_carriers_df)
-    stg_events_std_df = standardize_columns(stg_events_df)
-
     region_lookup_df = load_region_lookup(spark=spark, lookup_path=region_lookup_source)
-
-    stg_shipments_enriched_df = enrich_shipments_with_region(
-        shipments_df=stg_shipments_std_df,
-        region_lookup_df=region_lookup_df,
-    )
-    stg_events_enriched_df = enrich_delivery_events_with_region(
-        events_df=stg_events_std_df,
-        region_lookup_df=region_lookup_df,
-    )
-
-    stg_shipments_enriched_df.createOrReplaceTempView("stg_shipments")
-    stg_carriers_std_df.createOrReplaceTempView("stg_carriers")
-    stg_events_enriched_df.createOrReplaceTempView("stg_delivery_events")
-
-    dim_carrier_df = build_dim_carrier(stg_carriers_df=stg_carriers_std_df, run_date=batch_date)
-    fct_shipment_df = build_fct_shipment(
-        stg_shipments_df=stg_shipments_enriched_df,
-        region_lookup_df=region_lookup_df,
-    )
-    fct_delivery_event_df = build_fct_delivery_event(
-        stg_events_df=stg_events_enriched_df,
-        stg_shipments_df=stg_shipments_enriched_df,
-        region_lookup_df=region_lookup_df,
-    )
-    agg_shipment_daily_df = build_agg_shipment_daily(fct_shipment_df=fct_shipment_df)
-    kpi_delivery_daily_df = build_kpi_delivery_daily(
-        agg_shipment_daily_df=agg_shipment_daily_df,
-        fct_delivery_event_df=fct_delivery_event_df,
-    )
-
-    logger.info("Building Phase-6 Gold analytics tables")
-
-    from transport_etl.transform.build_carrier_performance import (
-        build_carrier_performance,
-    )
-    from transport_etl.transform.build_delivery_exception_summary import (
-        build_delivery_exception_summary,
-    )
-    from transport_etl.transform.build_route_performance import (
-        build_route_performance,
-    )
-
-    carrier_performance_df = build_carrier_performance(
-        fct_shipment_df=fct_shipment_df,
-        fct_delivery_event_df=fct_delivery_event_df,
-        dim_carrier_df=dim_carrier_df,
-    )
-    route_performance_df = build_route_performance(fct_shipment_df=fct_shipment_df)
-    delivery_exception_summary_df = build_delivery_exception_summary(
-        fct_delivery_event_df=fct_delivery_event_df,
-        fct_shipment_df=fct_shipment_df,
-    )
-
-    logger.info(
-        "Phase-6 Gold analytics built: carrier_performance=%s, "
-        "route_performance=%s, delivery_exception_summary=%s",
-        _safe_count(carrier_performance_df),
-        _safe_count(route_performance_df),
-        _safe_count(delivery_exception_summary_df),
-    )
 
     partitioning = (
         config.get("partitioning", {}) if isinstance(config.get("partitioning"), Mapping) else {}
@@ -619,6 +531,11 @@ def _execute_daily_flow(
             job_name="daily",
             quarantine_path=_join_storage_path(staging_base_path, "quarantine", "ingest"),
             bad_record_write_config=invalid_record_write_config,
+            schema_def={
+                TABLE_BRONZE_SHIPMENTS: shipments_schema,
+                TABLE_BRONZE_CARRIERS: carriers_schema,
+                TABLE_BRONZE_DELIVERY_EVENTS: delivery_events_schema,
+            }[entity],
         )
         bronze_writes[entity] = publish_bronze_table(
             df=bronze_df,
@@ -665,9 +582,9 @@ def _execute_daily_flow(
         "execution_mode": str(spark_config.get("profile", "local")),
     }
 
-    silver_shipments_schema = load_shipments_schema_definition()
-    silver_carriers_schema = load_carriers_schema_definition()
-    silver_delivery_events_schema = load_delivery_events_schema_definition()
+    silver_shipments_schema = shipments_schema
+    silver_carriers_schema = carriers_schema
+    silver_delivery_events_schema = delivery_events_schema
 
     silver_shipments_result = build_silver_shipments(
         spark=spark,
@@ -755,6 +672,95 @@ def _execute_daily_flow(
         silver_summary,
     )
 
+    # Build Gold from canonical Silver outputs so Silver deduplication
+    # and quarantine decisions govern downstream analytics.
+    silver_shipments_df = _run_staging_sql(
+        spark=spark,
+        sql_dir=staging_sql_dir,
+        sql_file_name="stg_shipments.sql",
+        raw_view_name="raw_shipments",
+        staging_view_name="stg_shipments",
+        input_df=silver_shipments_result.silver_df,
+    )
+    silver_carriers_df = _run_staging_sql(
+        spark=spark,
+        sql_dir=staging_sql_dir,
+        sql_file_name="stg_carriers.sql",
+        raw_view_name="raw_carriers",
+        staging_view_name="stg_carriers",
+        input_df=silver_carriers_result.silver_df,
+    )
+    silver_events_df = _run_staging_sql(
+        spark=spark,
+        sql_dir=staging_sql_dir,
+        sql_file_name="stg_delivery_events.sql",
+        raw_view_name="raw_delivery_events",
+        staging_view_name="stg_delivery_events",
+        input_df=silver_delivery_events_result.silver_df,
+    )
+
+    silver_shipments_df = enrich_shipments_with_region(
+        shipments_df=standardize_columns(silver_shipments_df),
+        region_lookup_df=region_lookup_df,
+    )
+    silver_carriers_df = standardize_columns(silver_carriers_df)
+    silver_events_df = enrich_delivery_events_with_region(
+        events_df=standardize_columns(silver_events_df),
+        region_lookup_df=region_lookup_df,
+    )
+
+    silver_shipments_df.createOrReplaceTempView("stg_shipments")
+    silver_carriers_df.createOrReplaceTempView("stg_carriers")
+    silver_events_df.createOrReplaceTempView("stg_delivery_events")
+
+    dim_carrier_df = build_dim_carrier(
+        stg_carriers_df=silver_carriers_df,
+        run_date=batch_date,
+    )
+    fct_shipment_df = build_fct_shipment(
+        stg_shipments_df=silver_shipments_df,
+        region_lookup_df=region_lookup_df,
+    )
+    fct_delivery_event_df = build_fct_delivery_event(
+        stg_events_df=silver_events_df,
+        stg_shipments_df=silver_shipments_df,
+        region_lookup_df=region_lookup_df,
+    )
+    agg_shipment_daily_df = build_agg_shipment_daily(fct_shipment_df=fct_shipment_df)
+    kpi_delivery_daily_df = build_kpi_delivery_daily(
+        agg_shipment_daily_df=agg_shipment_daily_df,
+        fct_delivery_event_df=fct_delivery_event_df,
+    )
+
+    from transport_etl.transform.build_carrier_performance import (
+        build_carrier_performance,
+    )
+    from transport_etl.transform.build_delivery_exception_summary import (
+        build_delivery_exception_summary,
+    )
+    from transport_etl.transform.build_route_performance import (
+        build_route_performance,
+    )
+
+    carrier_performance_df = build_carrier_performance(
+        fct_shipment_df=fct_shipment_df,
+        fct_delivery_event_df=fct_delivery_event_df,
+        dim_carrier_df=dim_carrier_df,
+    )
+    route_performance_df = build_route_performance(fct_shipment_df=fct_shipment_df)
+    delivery_exception_summary_df = build_delivery_exception_summary(
+        fct_delivery_event_df=fct_delivery_event_df,
+        fct_shipment_df=fct_shipment_df,
+    )
+
+    logger.info(
+        "Gold analytics built from Silver: carrier_performance=%s, "
+        "route_performance=%s, delivery_exception_summary=%s",
+        _safe_count(carrier_performance_df),
+        _safe_count(route_performance_df),
+        _safe_count(delivery_exception_summary_df),
+    )
+
     outputs: dict[str, str] = {}
     table_writes = [
         (TABLE_DIM_CARRIER, dim_carrier_df),
@@ -778,9 +784,10 @@ def _execute_daily_flow(
 
     for table_name, dataframe in table_writes:
         output_path = _join_storage_path(curated_base_path, table_name)
+        resolved_table, output_format = _resolve_gold_write_target(config, table_name)
         written_path = write_partitioned_table(
             df=dataframe,
-            table_name=table_name,
+            table_name=resolved_table,
             output_path=output_path,
             partitions=partition_keys,
             mode=write_mode,
@@ -791,6 +798,7 @@ def _execute_daily_flow(
             writer_options=parquet_options,
             write_config=curated_write_config,
             logger=logger,
+            output_format=output_format,
         )
         outputs[table_name] = written_path
 
@@ -815,9 +823,14 @@ def run_daily_batch(
     config_path: str,
     run_date: str | None = None,
     overrides: Mapping[str, Any] | None = None,
+    config_dir: str | Path | None = None,
 ) -> int:
     """Run the end-to-end daily ETL workflow."""
-    loaded_config = load_config(config_path)
+    loaded_config = (
+        load_config(config_path, config_dir=config_dir)
+        if config_dir is not None
+        else load_config(config_path)
+    )
     config = _apply_overrides(loaded_config, overrides)
 
     logging_config = config.get("logging", {}) if isinstance(config.get("logging"), Mapping) else {}

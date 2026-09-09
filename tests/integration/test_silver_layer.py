@@ -209,6 +209,123 @@ class TestSilverBuilder:
         # Exactly one row per shipment_id (dedup applied).
         assert result.silver_df.count() == result.silver_df.dropDuplicates(["shipment_id"]).count()
 
+    def test_quality_rules_preserve_latest_duplicate_for_dedup(
+        self, spark, sample_paths: dict[str, Path]
+    ) -> None:
+        """Generic quality rules must not remove every version of a business key."""
+        pytest.importorskip("pyspark")
+
+        from transport_etl.bronze.builder import build_bronze_shipments
+        from transport_etl.silver.builder import build_silver_shipments
+
+        bronze = build_bronze_shipments(
+            spark=spark,
+            source_path=str(sample_paths["raw_shipments"]),
+            run_date="2026-01-01",
+            batch_id="daily_20260101",
+        )
+        result = build_silver_shipments(
+            spark=spark,
+            bronze_df=bronze,
+            schema_def=load_shipments_schema_definition(),
+            batch_id="daily_20260101",
+            run_date="2026-01-01",
+            run_quality=True,
+        )
+
+        latest = (
+            result.silver_df.filter("shipment_id = 'SHP1006'")
+            .select("shipping_cost_usd", "updated_at")
+            .collect()
+        )
+        dropped = (
+            result.dropped_dups.filter("shipment_id = 'SHP1006'")
+            .select("shipping_cost_usd", "updated_at")
+            .collect()
+        )
+
+        assert len(latest) == 1
+        assert latest[0]["shipping_cost_usd"] == pytest.approx(415.0)
+        assert len(dropped) == 1
+        assert dropped[0]["shipping_cost_usd"] == pytest.approx(420.25)
+        assert latest[0]["updated_at"] > dropped[0]["updated_at"]
+
+    def test_invalid_old_version_does_not_remove_valid_latest_version(self, spark) -> None:
+        from pyspark.sql import functions as F
+
+        from transport_etl.silver.builder import RULE_NON_NEGATIVE, build_silver_shipments
+
+        rows = [
+            (
+                "SHPX",
+                "CAR001",
+                "CA",
+                "NV",
+                "2026-01-01T10:00:00Z",
+                "2026-01-02T10:00:00Z",
+                "2026-01-02T09:00:00Z",
+                -1.0,
+                100.0,
+                "2026-01-02T09:01:00Z",
+            ),
+            (
+                "SHPX",
+                "CAR001",
+                "CA",
+                "NV",
+                "2026-01-01T10:00:00Z",
+                "2026-01-02T10:00:00Z",
+                "2026-01-02T09:00:00Z",
+                250.0,
+                100.0,
+                "2026-01-02T09:02:00Z",
+            ),
+            (
+                "SHPY",
+                "CAR001",
+                "CA",
+                "NV",
+                "2026-01-01T10:00:00Z",
+                "2026-01-02T10:00:00Z",
+                "2026-01-02T09:00:00Z",
+                250.0,
+                -5.0,
+                "2026-01-02T09:03:00Z",
+            ),
+        ]
+        schema = (
+            "shipment_id string, carrier_id string, origin_state string, "
+            "destination_state string, pickup_ts string, promised_delivery_ts string, "
+            "actual_delivery_ts string, shipping_cost_usd double, distance_miles double, "
+            "updated_at string"
+        )
+        source = spark.createDataFrame(rows, schema=schema)
+        for column in (
+            "pickup_ts",
+            "promised_delivery_ts",
+            "actual_delivery_ts",
+            "updated_at",
+        ):
+            source = source.withColumn(column, F.to_timestamp(column))
+
+        result = build_silver_shipments(
+            spark=spark,
+            bronze_df=source,
+            schema_def=load_shipments_schema_definition(),
+            batch_id="daily_20260101",
+            run_date="2026-01-01",
+            run_quality=True,
+        )
+
+        survivor = result.silver_df.select("shipping_cost_usd").collect()
+        rejected = (
+            result.invalid_dfs[RULE_NON_NEGATIVE]
+            .select("shipment_id", "shipping_cost_usd", "distance_miles")
+            .collect()
+        )
+        assert [row["shipping_cost_usd"] for row in survivor] == [250.0]
+        assert {row["shipment_id"] for row in rejected} == {"SHPX", "SHPY"}
+
     def test_silver_carriers_builder(
         self, spark, sample_paths: dict[str, Path], tmp_path: Path
     ) -> None:
@@ -405,6 +522,38 @@ class TestSilverQuarantine:
         # At least one rule directory exists.
         rule_dirs = [p for p in silver_q.iterdir() if p.is_dir()]
         assert rule_dirs
+
+    def test_quarantine_write_failure_stops_silver_build(
+        self,
+        spark,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        import transport_etl.silver.builder as builder_module
+
+        bad = spark.createDataFrame(
+            [("SHP9999", None)],
+            schema="shipment_id string, carrier_id string",
+        )
+
+        def fail_quarantine(**_: object) -> str:
+            raise OSError("quarantine unavailable")
+
+        monkeypatch.setattr(
+            builder_module,
+            "quarantine_silver_records",
+            fail_quarantine,
+        )
+
+        with pytest.raises(OSError, match="quarantine unavailable"):
+            builder_module.build_silver_shipments(
+                spark=spark,
+                bronze_df=bad,
+                schema_def=load_shipments_schema_definition(),
+                batch_id="daily_20260101",
+                run_date="2026-01-01",
+                quarantine_path=str(tmp_path / "silver_q"),
+            )
 
 
 # ---------------------------------------------------------------------------

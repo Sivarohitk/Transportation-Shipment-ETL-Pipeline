@@ -47,6 +47,7 @@ def _build_minimal_shipments(n: int, *, seed: int = 0) -> pd.DataFrame:
             "origin_state": ["CA" if i % 3 == 0 else "TX" for i in range(n)],
             "destination_state": ["NV" if i % 3 == 0 else "OH" for i in range(n)],
             "promised_delivery_ts": [t + pd.Timedelta(hours=24) for t in pickup_ts],
+            "actual_delivery_ts": [t + pd.Timedelta(minutes=30) for t in pickup_ts],
             "distance_miles": rng.uniform(100, 1500, size=n),
             "shipping_cost_usd": rng.uniform(50, 2000, size=n),
         }
@@ -97,7 +98,7 @@ class TestBuildFeatureMatrix:
 
     def test_historical_features_chronological(self) -> None:
         """A row's historical features must be built only from rows
-        whose ``pickup_ts`` is strictly before its own."""
+        whose pickup and observed outcome precede its own pickup."""
         df = _build_minimal_shipments(50)
         labels = _build_labels(df)
         features = build_feature_matrix(df, is_late=labels)
@@ -122,6 +123,33 @@ class TestBuildFeatureMatrix:
             .reset_index(drop=True)
         )
         np.testing.assert_array_equal(actual.to_numpy(), expected_series.to_numpy())
+
+    def test_same_pickup_timestamp_cannot_observe_peer_outcomes(self) -> None:
+        """Rows booked together must receive identical pre-booking history."""
+        df = _build_minimal_shipments(2)
+        df["pickup_ts"] = df["pickup_ts"].iloc[0]
+        df["actual_delivery_ts"] = df["pickup_ts"] + pd.Timedelta(hours=1)
+        df["carrier_id"] = "CAR001"
+        df["origin_state"] = "CA"
+        df["destination_state"] = "NV"
+
+        features = build_feature_matrix(df, is_late=pd.Series([1, 0]))
+
+        assert features[COL_CARRIER_HIST_SHIPMENT_COUNT].tolist() == [0, 0]
+        assert features[COL_ROUTE_HIST_SHIPMENT_COUNT].tolist() == [0, 0]
+
+    def test_history_requires_outcome_to_be_observable(self) -> None:
+        """A prior pickup is not history until its outcome is known."""
+        df = _build_minimal_shipments(2)
+        df["carrier_id"] = "CAR001"
+        df["origin_state"] = "CA"
+        df["destination_state"] = "NV"
+        df.loc[0, "actual_delivery_ts"] = df.loc[1, "pickup_ts"] + pd.Timedelta(hours=1)
+
+        features = build_feature_matrix(df, is_late=pd.Series([1, 0]))
+
+        assert features[COL_CARRIER_HIST_SHIPMENT_COUNT].tolist() == [0, 0]
+        assert features[COL_ROUTE_HIST_SHIPMENT_COUNT].tolist() == [0, 0]
 
     def test_historical_rate_equals_prior_late_over_prior_total(self) -> None:
         """The historical late rate is the prior cumulative late
@@ -170,6 +198,18 @@ class TestBuildFeatureMatrix:
                 assert int(first_per_carrier[column].iloc[0]) == 0
             else:
                 assert np.isnan(first_per_carrier[column].iloc[0])
+
+    def test_missing_route_key_keeps_finite_historical_counts(self) -> None:
+        """Nullable route components must not produce NaN integer counts."""
+        df = _build_minimal_shipments(2)
+        df["origin_state"] = "CA"
+        df["destination_state"] = pd.NA
+        labels = pd.Series([0, 1], index=df.index, name="is_late")
+
+        features = build_feature_matrix(df, is_late=labels)
+
+        assert features[COL_ROUTE_HIST_SHIPMENT_COUNT].tolist() == [0, 1]
+        assert features[COL_ROUTE_HIST_SHIPMENT_COUNT].dtype == "int64"
 
     def test_promised_transit_hours_is_positive(self) -> None:
         df = _build_minimal_shipments(20)

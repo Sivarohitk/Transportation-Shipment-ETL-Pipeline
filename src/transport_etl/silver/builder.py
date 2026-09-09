@@ -86,7 +86,8 @@ class SilverBuildResult:
         invalid_dfs: Mapping of rule name to invalid DataFrame.
         dropped_dups: DataFrame containing the rows dropped during
             dedup (empty when no duplicates existed).
-        invalid_count: Total number of invalid records across rules.
+        invalid_count: Total number of quality-rejected and dedup-discarded
+            records.
         survived_count: Row count of ``silver_df``.
     """
 
@@ -146,7 +147,9 @@ def _build_shipments_context(schema_def: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "entity": "shipments",
         "required_columns": schema_def.get("required_columns"),
-        "duplicate_keys": schema_def.get("primary_key"),
+        # Silver resolves repeated operational versions deterministically
+        # after all other row-level quality checks.
+        "duplicate_keys": [],
         "allowed_values": {
             name: values for name, values in _allowed_values_by_column(schema_def).items()
         },
@@ -174,7 +177,7 @@ def _build_carriers_context(schema_def: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "entity": "carriers",
         "required_columns": schema_def.get("required_columns"),
-        "duplicate_keys": schema_def.get("primary_key"),
+        "duplicate_keys": [],
         "allowed_values": _allowed_values_by_column(schema_def),
         "primary_key": schema_def.get("primary_key"),
     }
@@ -185,7 +188,7 @@ def _build_delivery_events_context(schema_def: Mapping[str, Any]) -> dict[str, A
     return {
         "entity": "delivery_events",
         "required_columns": schema_def.get("required_columns"),
-        "duplicate_keys": schema_def.get("primary_key"),
+        "duplicate_keys": [],
         "allowed_values": _allowed_values_by_column(schema_def),
         "non_negative_columns": _non_negative_columns(schema_def),
         "timestamp_order_rules": [
@@ -268,9 +271,14 @@ def _process_quality_results(
             silver_label = _map_failed_rule_to_silver_label(str(failed_rule), rule_label_map)
             if silver_label is None:
                 continue
-            subset = invalid_df.filter(F.col("__rule_name") == F.lit(silver_label))
+            subset = invalid_df.filter(F.col("__rule_name") == F.lit(str(failed_rule)))
             if subset is not None:
-                invalid_dfs[silver_label] = subset
+                existing = invalid_dfs.get(silver_label)
+                invalid_dfs[silver_label] = (
+                    existing.unionByName(subset, allowMissingColumns=True)
+                    if existing is not None
+                    else subset
+                )
             else:
                 invalid_dfs[silver_label] = _empty_with_columns(
                     invalid_df, [RULE_REQUIRED_NULLS, RULE_DUPLICATE_KEYS]
@@ -296,11 +304,11 @@ def _process_quality_results(
     # Quarantine writes — only persist frames that contain rows.
     if quarantine_path:
         for rule_name, frame in invalid_dfs.items():
+            if frame is None:
+                continue
+            if int(frame.count() or 0) == 0:
+                continue
             try:
-                if frame is None:
-                    continue
-                if int(frame.count() or 0) == 0:
-                    continue
                 quarantine_silver_records(
                     invalid_df=frame,
                     quarantine_path=quarantine_path,
@@ -310,13 +318,13 @@ def _process_quality_results(
                     run_date=run_date,
                     write_config=write_config,
                 )
-            except Exception as exc:  # pragma: no cover - defensive
-                logger.warning(
-                    "Silver quarantine write failed for table=%s rule=%s error=%s",
+            except Exception:
+                logger.exception(
+                    "Silver quarantine write failed for table=%s rule=%s",
                     table_name,
                     rule_name,
-                    exc,
                 )
+                raise
 
     clean_df = quality_result.get("clean_df") or quality_result.get("df")
     if clean_df is None and invalid_df is not None:
@@ -338,7 +346,6 @@ def _build_rule_label_map() -> dict[str, str]:
     """
     return {
         "required_nulls": RULE_REQUIRED_NULLS,
-        "duplicate_keys": RULE_DUPLICATE_KEYS,
         "schema_drift": RULE_SCHEMA_DRIFT,
         "allowed_values": RULE_INVALID_ALLOWED_VALUE,
         "non_negative": RULE_NON_NEGATIVE,
@@ -495,7 +502,9 @@ def _build_silver(
     silver_df = dedup.survived
     dropped_dups = dedup.dropped
 
-    if dropped_dups is not None and quarantine_path and int(dropped_dups.count() or 0) > 0:
+    dropped_count = int(dropped_dups.count() or 0) if dropped_dups is not None else 0
+    invalid_count += dropped_count
+    if dropped_count > 0 and quarantine_path:
         quarantine_silver_records(
             invalid_df=dropped_dups,
             quarantine_path=quarantine_path,

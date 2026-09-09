@@ -1,270 +1,214 @@
-# Databricks Deployment (Phase 9)
+# Databricks deployment
 
-This document describes how to deploy the **Transport Shipment ETL**
-to a Databricks workspace using a **Lakeflow Job** orchestrated by
-a **Declarative Automation Bundle** (formerly "Databricks Asset
-Bundles" / DAB).
+This project adds Databricks as an execution target without changing the
+local or Amazon EMR paths. Local and EMR continue to use Parquet and the
+existing Hive-compatible behavior. Databricks uses a Declarative Automation
+Bundle, serverless Lakeflow Jobs, managed Delta tables, and Unity Catalog
+Volumes for file-based inputs and non-table outputs.
 
-> **Status (Phase 9 commit).**  The bundle and job YAML are
-> committed and validated by the test suite in
-> ``tests/databricks/``.  The **Databricks CLI is not installed in
-> this development environment**, so ``databricks bundle validate``
-> was not executed.  Validation **must** be performed by an operator
-> with a configured Databricks CLI before any ``databricks bundle
-> deploy`` command is run.  See
-> [Required manual commands](#required-manual-commands).
+## Phase 10 live validation status
 
-## Bundle layout
+The development bundle was validated, deployed, and run end to end on
+2026-09-08 in a Databricks Free Edition serverless workspace. The final
+three-task Lakeflow run completed successfully, and each task had its own
+`SUCCESS` result:
 
-```
-deploy/
-└── databricks/
-    ├── databricks.yml                      # top-level bundle config
-    ├── resources/
-    │   └── transport_etl_job.yml           # Lakeflow job definition
-    ├── targets/
-    │   ├── dev.yml                         # dev-target overrides
-    │   └── prod.yml                        # prod-target overrides
-    ├── dist/                                # wheel build output (git-ignored)
-    └── .gitignore                           # dist/ is excluded
+```text
+ingest_bronze_silver_gold  SUCCESS
+score_late_risk            SUCCESS
+data_quality_checks        SUCCESS (11 passed)
 ```
 
-The wheel is built locally by ``python.build_commands`` in
-``databricks.yml`` (``pip wheel --no-deps --wheel-dir dist .``) and
-is uploaded to the workspace by ``databricks bundle deploy``.
+The run produced and queried 14 managed Delta tables: 3 Bronze, 3 Silver, and
+8 Gold. Observed row counts were 11 shipments, 6 carriers, and 43 delivery
+events at Bronze/Silver fact grain; the corresponding Gold facts retained
+those counts. All tested business/grain keys were unique after repeated runs.
+A deterministic shipment update was applied through the Silver MERGE and
+remained present after the final rerun.
 
-## Terminology note
+The live ML validation used 5,000 deterministic synthetic shipments. All
+5,000 were scored, including two deliberately supplied rows with a null route
+component. Probabilities were finite and within `[0, 1]`; `risk_band` and
+`predicted_late` were populated for every row. Evaluation values in the task
+output came from that actual chronological train/validation/test run.
 
-"Databricks Asset Bundles" was renamed to
-"**Declarative Automation Bundles**" in the Databricks product
-documentation.  The YAML schema in this repository is unchanged;
-only the marketing name moved.  This is the current terminology
-the operator will see in the Databricks CLI output.
+This record describes the Phase 10 workspace run. Phase 15 subsequently
+repaired outcome-availability history, Gold-from-Silver lineage, and KPI
+cohort alignment. Those changes are locally regression-tested and the bundle
+is validated, but this repaired revision has not been redeployed or executed
+in the workspace.
 
-## Lakeflow Job DAG
+## Bundle layout and path rules
 
-The job runs **three sequential tasks** in a single Lakeflow Job:
+The bundle root is `deploy/databricks/`; the repository root is `../..` from
+that directory.
 
-```
-ingest_bronze_silver_gold  (transport-etl, --job daily)
-        │
-        ▼
-score_late_risk            (transport-etl-ml, train-and-score)
-        │
-        ▼
-data_quality_checks        (pytest -q tests/data_quality/)
-```
-
-### Why one job with three tasks (not three separate jobs)
-
-A single Lakeflow Job keeps the dependencies explicit and lets the
-operator re-run a backfill in a single click.  All three tasks
-share the same on-demand job cluster (``transport_etl_cluster``)
-so there is no cluster-provisioning overhead between tasks.  The
-cluster is torn down on completion; the next run creates a fresh
-one.
-
-### Task details
-
-| Task | Entry point | What it does |
-|---|---|---|
-| ``ingest_bronze_silver_gold`` | ``transport-etl --job daily`` | Ingest today's CSVs, validate against the explicit schemas, and write Bronze + Silver + Gold tables.  This is the existing ``run_daily_batch`` end-to-end flow. |
-| ``score_late_risk`` | ``transport-etl-ml train-and-score`` | Train the late-risk model on the most recent historical shipments, score today's shipments, and emit a decision-support frame with ``risk_probability`` / ``risk_band`` / ``predicted_late``. |
-| ``data_quality_checks`` | ``sh -lc pytest -q tests/data_quality/`` | Run the data-quality test suite against the freshly-written Silver and Gold tables.  Failures surface as Lakeflow task failures. |
-
-### Task dependencies
-
-- ``ingest_bronze_silver_gold`` → no predecessor.
-- ``score_late_risk`` → depends on ``ingest_bronze_silver_gold``.
-- ``data_quality_checks`` → depends on both upstream tasks.
-
-### Cluster configuration
-
-The job uses a single on-demand cluster with:
-
-- ``spark_version: 14.3.x-scala2.12`` (Databricks Runtime LTS that
-  ships PySpark 3.5.x).
-- ``num_workers: 0`` (single-node; the dataset is small).
-- ``data_security_mode: SINGLE_USER`` (the documented
-  production setting for Lakeflow jobs).
-- The runtime Spark conf mirrors ``config/spark/databricks.conf``
-  in the repository.
-
-## Why no notebook copies of the pipeline
-
-AGENTS.md rule 1 forbids duplicating the existing local/EMR
-behaviour.  The bundle invokes the existing
-``transport_shipment_etl`` Python wheel — every task is a
-``python_wheel_task`` that runs the project's own console scripts.
-There is **no** ``.ipynb`` file in the bundle.
-
-## Configuration variables (no credentials)
-
-| Variable | Default | Where to override |
-|---|---|---|
-| ``wheel_path`` | ``./dist/transport_shipment_etl-0.1.0-py3-none-any.whl`` | Re-build with ``pip wheel`` (no override needed) |
-| ``etl_entry_point`` | ``transport-etl`` | Fixed; do not change |
-| ``ml_entry_point`` | ``transport-etl-ml`` | Fixed; do not change |
-| ``config_path`` | ``../config/databricks.yaml`` | Per-target |
-| ``raw_base_path`` | ``dbfs:/mnt/transport/<env>/raw`` | Per-target |
-| ``reference_base_path`` | ``dbfs:/mnt/transport/<env>/reference`` | Per-target |
-| ``staging_base_path`` | ``dbfs:/mnt/transport/<env>/staging`` | Per-target |
-| ``curated_base_path`` | ``dbfs:/mnt/transport/<env>/curated`` | Per-target |
-| ``audit_base_path`` | ``dbfs:/mnt/transport/<env>/logs`` | Per-target |
-| ``spark_profile`` | ``databricks`` | Fixed; do not change |
-| ``hive_database`` | ``curated`` (dev: ``curated_dev``) | Per-target |
-| ``ml_decision_threshold`` | ``0.25`` | Per-target |
-
-The **workspace host** and **credential** are intentionally
-absent from the YAML.  The Databricks CLI profile
-(``databricks configure``) supplies them at deploy time.
-The bundle's ``workspace.host`` field is a placeholder
-(``https://<your-workspace>.cloud.databricks.com``) that the
-operator replaces per target.
-
-## Required manual commands
-
-The following commands must be run by an operator with a
-configured Databricks CLI.  The bundle itself does **not** run
-them.
-
-### 1. Configure the Databricks CLI
-
-```bash
-databricks configure --host https://<your-workspace>.cloud.databricks.com \
-    --token <your-personal-access-token>
+```text
+deploy/databricks/
+|-- databricks.yml
+|-- resources/transport_etl_job.yml
+|-- targets/dev.yml
+|-- targets/prod.yml
+`-- dist/
 ```
 
-(or use a service-principal profile if your workspace enforces
-SCIM-only auth).
+Top-level `include` contains only bundle configuration fragments. The Python
+application is built as a wheel from the repository root through the current
+`artifacts` schema. Runtime configuration, synthetic sample data, staging SQL,
+and the existing data-quality tests are uploaded through `sync.paths`.
 
-### 2. Validate the bundle (run from ``deploy/databricks/``)
+The artifact configuration is equivalent to:
 
-```bash
-cd deploy/databricks
-databricks bundle validate
+```yaml
+artifacts:
+  python_wheel:
+    type: whl
+    path: ../..
+    build: python -m pip wheel --no-deps --wheel-dir deploy/databricks/dist .
 ```
 
-The expected output is a summary of the resolved bundle
-configuration.  **The CI test suite cannot replace this step** —
-it only verifies the YAML schema and structural contracts.  An
-operator must run ``databricks bundle validate`` on a workstation
-where the Databricks CLI is installed and authenticated.
+This preserves the package and console entry points declared in the root
+`pyproject.toml`; `deploy/databricks/` is not treated as a Python project.
 
-### 3. (Optional) Override the workspace host for the target
+The wheel intentionally does not contain repository configuration, schema
+JSON, SQL, or test files. The ETL task therefore passes both
+`--config-dir ${workspace.file_path}/config` and
+`--resource-base-path ${workspace.file_path}`. The first makes
+`databricks.yaml` merge with the synced `base.yaml`, including its logging
+configuration. The second resolves schema JSON and the staging SQL directory
+from the synced bundle root instead of from the installed wheel. Local and EMR
+omit these flags and retain the existing repository-root defaults.
 
-```bash
-databricks bundle validate --target dev \
-    --var="workspace_host=https://acme.cloud.databricks.com"
+The data-quality entry point runs pytest in the wheel-task process so its
+fixtures can reuse the serverless managed Spark session. It receives the same
+resource root through `TRANSPORT_ETL_RESOURCE_BASE_PATH`, disables cache and
+bytecode writes beside read-only Workspace Files, and uses a configured UC
+Volume path for test quarantine writes. A nonzero pytest result raises from
+the entry point and therefore fails the Lakeflow task. Curated, Gold, KPI, and
+quality SQL files are documentation/test assets in the current pipeline; the
+running daily job only reads the three files under `sql/staging/`.
+
+## Serverless Lakeflow Job
+
+Databricks Free Edition is serverless-only. The job therefore has no
+`job_clusters`, `new_cluster`, `node_type_id`, `spark_version`,
+`data_security_mode`, or manually provisioned compute setting. Each Python
+wheel task references the job's `serverless` environment with
+`environment_version: "4"`, as supported by the installed CLI schema.
+
+The task dependency graph remains:
+
+```text
+ingest_bronze_silver_gold
+        |
+        v
+score_late_risk
+        |
+        v
+data_quality_checks
 ```
 
-### 4. Deploy (manual gate)
+All tasks invoke console scripts from the existing wheel. No ETL logic is
+copied into notebooks.
 
-```bash
-cd deploy/databricks
-databricks bundle deploy --target dev
+## Storage and Unity Catalog
+
+Bronze, Silver, and Gold outputs use managed Delta tables. Catalog and schema
+names are bundle variables and are forwarded to the ETL CLI as application
+configuration overrides:
+
+- `catalog_name`
+- `bronze_schema`
+- `silver_schema`
+- `gold_schema`
+
+The development defaults use the Free Edition `workspace` catalog and
+separate `bronze_dev`, `silver_dev`, and `gold_dev` schema names. Production
+uses `bronze`, `silver`, and `gold`. These objects must already exist before a
+job can run; the bundle does not create or delete them.
+
+File-based inputs, quarantined records, audit output, and the existing
+file-based ML interface use paths shaped as:
+
+```text
+/Volumes/${catalog_name}/${file_schema}/${volume_name}/raw
+/Volumes/${catalog_name}/${file_schema}/${volume_name}/reference
+/Volumes/${catalog_name}/${file_schema}/${volume_name}/staging
+/Volumes/${catalog_name}/${file_schema}/${volume_name}/audit
+/Volumes/${catalog_name}/${file_schema}/${volume_name}/ml
 ```
 
-This is **irreversible on the target workspace** — the bundle
-creates the Lakeflow Job, the cluster spec, and uploads the
-Python wheel.  Confirm the deploy target with your team before
-running it.
+The defaults name `workspace.default.transport_etl`, but the Volume is a
+prerequisite, not an assumption: override `file_schema` and `volume_name` when
+using a different existing Volume. The bundle does not require DBFS mounts,
+external locations, storage credentials, S3 buckets, or Azure storage.
 
-### 5. Trigger a run
+The `curated_base_path` variable remains for compatibility with the shared
+local/EMR pipeline interface. On the Databricks Delta path, managed table
+writers ignore that path and call `saveAsTable` with a configured Unity
+Catalog identifier.
 
-```bash
-databricks bundle run transport_etl_job --target dev
+## Authentication
+
+Use Databricks CLI OAuth and a named local profile. Never place the workspace
+host, profile name, username, token, or other credentials in bundle files.
+
+```powershell
+databricks auth login --host https://<workspace-host> --profile <profile>
+databricks auth profiles
+databricks current-user me --profile <profile>
 ```
 
-(``--target`` is optional; default is the ``dev`` target.)
+The selected profile supplies the workspace host and OAuth credentials. A
+personal access token is not required by this workflow.
 
-### 6. Trigger a backfill for a specific date
+## Validate without deploying
 
-```bash
-databricks bundle run transport_etl_job --target dev --params="run_date=2026-01-15"
+Run validation from the bundle root:
+
+```powershell
+Set-Location deploy/databricks
+databricks bundle validate --target dev --profile <profile>
 ```
 
-## Local-equivalent (no Databricks workspace)
+Validation is read-only with respect to bundle resources. Do not substitute
+`bundle deploy`, `bundle run`, or `jobs run-now` when performing the Phase 9.1
+validation gate.
 
-When the Databricks CLI is not available (the development
-environment for this portfolio project), the pipeline can be
-exercised locally with:
+## Prerequisites for another deployment or run
 
-```bash
-# Daily ETL (Bronze + Silver + Gold)
-python -m transport_etl.main --job daily --config config/databricks.yaml \
-    --run-date 2026-01-15 \
-    --raw-base-path data/sample/raw \
-    --staging-base-path data/local/staging \
-    --curated-base-path data/local/curated \
-    --reference-base-path data/sample/reference \
-    --spark-profile databricks \
-    --no-register-hive
+An operator must complete and verify these items manually:
 
-# ML scoring
-python -m transport_etl.ml.cli train-and-score \
-    --shipments data/local/curated/fct_shipment \
-    --output-dir data/local/scored \
-    --model logistic_regression
-```
+1. Select an existing writable Unity Catalog catalog.
+2. Create or select the configured Bronze, Silver, and Gold schemas.
+3. Create or select the configured Unity Catalog Volume.
+4. Upload the clearly labeled synthetic CSV inputs and region reference file
+   under the configured `raw` and `reference` directories.
+5. Provide a CSV at `ml_shipments_path` for the existing file-based ML CLI.
+6. Confirm that serverless environment version 4 contains or can install the
+   wheel dependencies from `pyproject.toml`.
+7. Re-run bundle validation with the intended target and profile.
 
-These commands exercise the same Python modules the bundle
-invokes; only the cluster / Unity Catalog integration is
-Databricks-specific.
+The Phase 10 development validation satisfied these prerequisites in its test
+workspace. Other targets and workspaces must provision their own objects and
+inputs before deployment or execution.
 
-## Why ``databricks bundle validate`` is not auto-run in CI
+## Honest runtime limitations
 
-- The Databricks CLI is not installed in this development
-  environment.
-- Even if it were, ``validate`` requires a configured workspace
-  profile (``databricks configure``) which is operator-specific
-  and **must not** be committed.
-- AGENTS.md rule 9 explicitly forbids mocking Databricks APIs
-  in tests.  Auto-running ``validate`` with a stub would be a
-  silent fake.
-- The test suite in ``tests/databricks/`` asserts the bundle
-  schema (YAML, structure, dependencies) which is what
-  ``validate`` does mechanically; the workspace-resolution part
-  is operator-specific and out of scope.
+- The late-risk CLI currently consumes a CSV, while the ETL Gold layer writes
+  a managed Delta table. The bundle keeps `ml_shipments_path` configurable;
+  producing that CSV from the managed fact table remains a manual prerequisite
+  until a separate, tested integration is implemented.
+- The data-quality task runs the repository's existing synthetic
+  `tests/data_quality/` suite. It does not yet query the newly written Unity
+  Catalog tables as a post-run reconciliation suite.
+- Production-target deployment, scheduling, and production-data behavior were
+  not validated; the verified live execution used the development target and
+  clearly labeled synthetic data.
 
-## What is verified in CI
+## Local and EMR behavior
 
-The CI test suite (``tests/databricks/test_bundle_structure.py``
-and ``tests/databricks/test_wheel_build.py``) covers:
-
-- YAML files are syntactically valid and loadable.
-- The top-level bundle has the required sections (``bundle``,
-  ``include``, ``exclude``, ``variables``, ``targets``, ``python``).
-- The Lakeflow Job has exactly the three documented tasks
-  (``ingest_bronze_silver_gold``, ``score_late_risk``,
-  ``data_quality_checks``).
-- Task dependencies match the documented DAG.
-- Every task is a ``python_wheel_task`` (no notebook copies).
-- The ``entry_point`` values match the ``[project.scripts]``
-  block in ``pyproject.toml``.
-- No real credentials, no real workspace URLs (only placeholders).
-- The ``include`` patterns cover the pipeline source.
-- The wheel name in ``databricks.yml`` matches what
-  ``pyproject.toml`` produces.
-- The ML CLI exposes the ``train-and-score`` subcommand that the
-  bundle invokes.
-- The Databricks CLI absence is documented (not a silent failure).
-
-## What is **not** verified in CI
-
-- The bundle's actual deploy to a real workspace.
-- Cluster startup time, runtime behaviour, or cost.
-- Databricks-specific feature compatibility (Unity Catalog
-  privileges, runtime versions, etc.).
-- The exact ``databricks bundle validate`` exit message.
-
-These require a configured workspace and a human operator.
-
-## Live-Databricks skip policy
-
-There is no test in this repository that auto-runs
-``databricks bundle validate``, ``databricks bundle deploy``, or
-``databricks jobs run-now``.  The test file
-``tests/databricks/test_bundle_structure.py::TestDatabricksCliAvailability``
-explicitly records the absence of the CLI and skips; it does **not**
-mock or fabricate a successful validation.
+No local or EMR storage setting was changed. Continue using the existing local
+and EMR commands and configuration files documented in the project README.
+Databricks-specific Delta, Unity Catalog, Volume, and serverless settings are
+gated by the Databricks profile and bundle target.

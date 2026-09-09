@@ -10,12 +10,11 @@ constraints are enforced here:
    is called on the final feature matrix to make any violation
    fail loudly.
 
-2. **Chronological correctness of historical aggregates** — when
+2. **As-of correctness of historical aggregates** — when
    we use a historical feature such as ``carrier_historical_late_rate``,
-   it is computed using **only** shipments whose ``pickup_ts`` is
-   strictly before the current row's ``pickup_ts``.  This is a
-   time-aware groupwise computation; it is not a flat groupby
-   across the full dataset, which would leak the future.
+   it is computed using **only** shipments whose pickup and observed
+   outcome both precede the current row's ``pickup_ts``.  Rows booked
+   at the same timestamp cannot observe one another's outcomes.
 
 The function :func:`build_feature_matrix` accepts the output of the
 Silver/Gold layer (or, for offline training, the synthetic
@@ -130,12 +129,14 @@ def _historical_late_rate_chronological(
     pickup_ts: pd.Series,
     group_keys: pd.Series,
     is_late: pd.Series,
+    outcome_available_ts: pd.Series,
 ) -> tuple[pd.Series, pd.Series]:
-    """Compute time-aware historical late rate and shipment count.
+    """Compute outcome-aware historical late rate and shipment count.
 
     For each row ``i`` with key ``g(i)`` and timestamp ``t(i)`` the
     feature value is the mean ``is_late`` over the rows ``j`` such
-    that ``key(j) == g(i)`` and ``pickup_ts(j) < t(i)``.
+    that ``key(j) == g(i)``, ``pickup_ts(j) < t(i)``, and the outcome
+    for row ``j`` was observed before ``t(i)``.
 
     Args:
         pickup_ts: Pickup timestamps for every row (chronological key).
@@ -143,6 +144,9 @@ def _historical_late_rate_chronological(
             a route tuple).  Must be a Series with the same index as
             ``pickup_ts``.
         is_late: ``0/1`` label per row.
+        outcome_available_ts: Timestamp when each label became
+            observable.  For delivered shipments this is
+            ``actual_delivery_ts``.
 
     Returns:
         A tuple of two Series (late_rate, count) indexed identically
@@ -151,56 +155,46 @@ def _historical_late_rate_chronological(
         distinguish "no history" from "history with 0% late".
     """
     pickup_dt = _safe_pickup_ts(pickup_ts)
+    available_dt = pd.to_datetime(outcome_available_ts, errors="coerce", utc=True)
     frame = pd.DataFrame(
         {
             "_pickup_ts": pickup_dt,
+            "_available_ts": available_dt,
             "_key": group_keys.astype("string"),
-            "_late": is_late.astype("Int64").fillna(0).astype("int64"),
+            "_late": is_late.astype("Int64"),
         }
     )
 
-    # We compute, for every row ``i``, the cumulative mean and count
-    # of prior (strictly-earlier) rows in the same group.  A fast
-    # way to do this is to use ``groupby().cumcount()`` plus a
-    # ``groupby().cumsum()`` after shifting by one row inside the
-    # group.  The resulting counts are *exclusive* of the current
-    # row and of all rows at the same timestamp (because we shift by
-    # one position).
-    frame = frame.sort_values(["_pickup_ts", "_key"], kind="mergesort", na_position="last")
-    frame["_pos_in_group"] = frame.groupby("_key").cumcount()
-    # Group cumulative late sums (we will subtract the current row's
-    # late flag later).
-    frame["_cum_late"] = frame.groupby("_key")["_late"].cumsum()
-    # Group cumulative count.
-    frame["_cum_count"] = frame.groupby("_key").cumcount() + 1
+    late_rate = pd.Series(np.nan, index=frame.index, dtype="float64")
+    count = pd.Series(0, index=frame.index, dtype="int64")
 
-    # The "prior to row i" counts are obtained by removing the
-    # current row from each cumulative.
-    prior_late = frame["_cum_late"] - frame["_late"]
-    prior_count = frame["_cum_count"] - 1
+    # The datasets used here are deliberately batch-sized.  Evaluating
+    # each group as an as-of cohort keeps the availability contract
+    # explicit and, unlike a positional cumulative sum, handles tied
+    # pickup timestamps correctly.
+    for _, group in frame.groupby("_key", dropna=False, sort=False):
+        known_outcome = group["_late"].notna() & group["_available_ts"].notna()
+        for prediction_ts, prediction_rows in group.groupby("_pickup_ts", dropna=False, sort=False):
+            if pd.isna(prediction_ts):
+                continue
+            eligible = (
+                known_outcome
+                & (group["_pickup_ts"] < prediction_ts)
+                & (group["_available_ts"] < prediction_ts)
+            )
+            eligible_count = int(eligible.sum())
+            count.loc[prediction_rows.index] = eligible_count
+            if eligible_count:
+                late_rate.loc[prediction_rows.index] = float(group.loc[eligible, "_late"].mean())
 
-    late_rate = np.where(
-        prior_count > 0,
-        prior_late / prior_count,
-        np.nan,
-    ).astype("float64")
-    count_series = prior_count.astype("int64")
-
-    # Return in the original input order.
-    out = pd.DataFrame(
-        {"late_rate": late_rate, "count": count_series},
-        index=frame.index,
-    )
-    out["_original_pos"] = np.arange(len(frame))
-    # Reorder back to the original sort order of the input.  We use
-    # the original frame's positional order to align the result.
-    return out["late_rate"], out["count"]
+    return late_rate, count
 
 
 def build_feature_matrix(
     shipments: pd.DataFrame,
     *,
     is_late: pd.Series | None = None,
+    outcome_available_ts: pd.Series | None = None,
 ) -> pd.DataFrame:
     """Build the labelled feature matrix from upstream shipment data.
 
@@ -214,6 +208,8 @@ def build_feature_matrix(
             historical features are computed.  When ``None``,
             historical features are filled with ``NaN`` / 0 so the
             frame can still be scored (no leakage check failure).
+        outcome_available_ts: Timestamp when each supplied label became
+            observable.  Defaults to the input ``actual_delivery_ts``.
 
     Returns:
         A new ``pandas`` DataFrame containing:
@@ -243,6 +239,15 @@ def build_feature_matrix(
             f"is_late length ({len(is_late)}) does not match "
             f"shipments length ({len(shipments)})"
         )
+    if is_late is not None:
+        if outcome_available_ts is None and "actual_delivery_ts" in shipments.columns:
+            outcome_available_ts = shipments["actual_delivery_ts"]
+        if outcome_available_ts is None:
+            raise ValueError(
+                "outcome_available_ts or actual_delivery_ts is required for historical features"
+            )
+        if len(outcome_available_ts) != len(shipments):
+            raise ValueError("outcome_available_ts length must match shipments length")
 
     # Drop forbidden columns from the input to enforce the
     # no-leakage contract.  The caller is allowed to pass
@@ -271,6 +276,7 @@ def build_feature_matrix(
             pickup_ts=out["pickup_ts"],
             group_keys=out["carrier_id"],
             is_late=is_late,
+            outcome_available_ts=outcome_available_ts,
         )
         out[COL_CARRIER_HIST_LATE_RATE] = carrier_late
         out[COL_CARRIER_HIST_SHIPMENT_COUNT] = carrier_count
@@ -282,6 +288,7 @@ def build_feature_matrix(
             pickup_ts=out["pickup_ts"],
             group_keys=route_keys,
             is_late=is_late,
+            outcome_available_ts=outcome_available_ts,
         )
         out[COL_ROUTE_HIST_LATE_RATE] = route_late
         out[COL_ROUTE_HIST_SHIPMENT_COUNT] = route_count
@@ -340,7 +347,31 @@ def feature_columns(
     return [c for c in df.columns if c in include_set and c not in excluded]
 
 
-def fill_missing_for_scoring(df: pd.DataFrame) -> pd.DataFrame:
+def scoring_fill_values(df: pd.DataFrame) -> dict[str, float]:
+    """Derive numeric null defaults from a training feature frame."""
+    values: dict[str, float] = {}
+    for column in (
+        COL_CARRIER_HIST_LATE_RATE,
+        COL_ROUTE_HIST_LATE_RATE,
+    ):
+        if column in df.columns:
+            values[column] = float(df[column].mean()) if df[column].notna().any() else 0.0
+    for column in (
+        COL_CARRIER_HIST_SHIPMENT_COUNT,
+        COL_ROUTE_HIST_SHIPMENT_COUNT,
+    ):
+        if column in df.columns:
+            values[column] = 0.0
+    if COL_PROMISED_TRANSIT_HOURS in df.columns:
+        values[COL_PROMISED_TRANSIT_HOURS] = 24.0
+    return values
+
+
+def fill_missing_for_scoring(
+    df: pd.DataFrame,
+    *,
+    fill_values: dict[str, float] | None = None,
+) -> pd.DataFrame:
     """Fill nulls in a feature matrix that will be scored (not trained).
 
     The training pipeline should keep nulls in the historical
@@ -360,21 +391,23 @@ def fill_missing_for_scoring(df: pd.DataFrame) -> pd.DataFrame:
         A new DataFrame with the same columns, nulls replaced.
     """
     out = df.copy()
+    defaults = scoring_fill_values(out) if fill_values is None else dict(fill_values)
     for column in (
         COL_CARRIER_HIST_LATE_RATE,
         COL_ROUTE_HIST_LATE_RATE,
     ):
         if column in out.columns:
-            fill = float(out[column].mean()) if out[column].notna().any() else 0.0
-            out[column] = out[column].fillna(fill)
+            out[column] = out[column].fillna(float(defaults.get(column, 0.0)))
     for column in (
         COL_CARRIER_HIST_SHIPMENT_COUNT,
         COL_ROUTE_HIST_SHIPMENT_COUNT,
     ):
         if column in out.columns:
-            out[column] = out[column].fillna(0).astype("int64")
+            out[column] = out[column].fillna(float(defaults.get(column, 0.0))).astype("int64")
     if COL_PROMISED_TRANSIT_HOURS in out.columns:
-        out[COL_PROMISED_TRANSIT_HOURS] = out[COL_PROMISED_TRANSIT_HOURS].fillna(24.0)
+        out[COL_PROMISED_TRANSIT_HOURS] = out[COL_PROMISED_TRANSIT_HOURS].fillna(
+            float(defaults.get(COL_PROMISED_TRANSIT_HOURS, 24.0))
+        )
     return out
 
 
@@ -393,4 +426,5 @@ __all__ = [
     "build_feature_matrix",
     "feature_columns",
     "fill_missing_for_scoring",
+    "scoring_fill_values",
 ]

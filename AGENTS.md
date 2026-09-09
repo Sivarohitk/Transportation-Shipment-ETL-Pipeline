@@ -20,14 +20,16 @@ Databricks is an **additional** execution target. It does not replace local or E
 - Clean, deduplicate, and validate records at each layer
 - Apply Bronze/Silver/Gold medallion architecture with documented data lineage
 - Build curated dimensional, fact, and aggregate models
-- Partition outputs by `p_date`, `region_code`, and `carrier_id`
+- Partition local/EMR outputs and Databricks Bronze/Gold outputs by configured
+  `p_date`, `region_code`, and `carrier_id` columns; Databricks Silver uses
+  managed keyed MERGE tables without a physical partition claim
 - Output Parquet datasets (local and EMR) and Delta tables (Databricks)
 - Compute carrier performance, route performance, and delivery exception KPIs
 - Produce Power BI-ready Gold outputs
 - Support incremental and idempotent processing; use Delta MERGE/upsert for changing operational records on Databricks
-- Provide a late-shipment risk model with chronologically valid ML evaluation (future phase)
-- Document DMAIC process-improvement case study (future phase)
-- Support Lakeflow Jobs orchestration and Declarative Automation Bundles (future phase)
+- Provide a late-shipment risk model with chronologically valid ML evaluation
+- Document DMAIC process-improvement case study
+- Support Lakeflow Jobs orchestration and Declarative Automation Bundles
 - Include meaningful tests and documentation
 - Keep code modular, production-style, and explainable in an interview
 
@@ -40,7 +42,7 @@ Databricks is an **additional** execution target. It does not replace local or E
 - Delta Lake (Databricks)
 - Unity Catalog-compatible `catalog.schema.table` naming (Databricks)
 - Amazon EMR deployment artifacts
-- Databricks Asset Bundles / Lakeflow Jobs (future phase)
+- Databricks Asset Bundles / Lakeflow Jobs
 - SQL
 - Pytest
 
@@ -63,7 +65,8 @@ Databricks is an **additional** execution target. It does not replace local or E
 - Curated dimensional and fact models: `dim_carrier`, `fct_shipment`, `fct_delivery_event`
 - Aggregate models: `agg_shipment_daily`
 - KPI outputs: `kpi_delivery_daily` (carrier performance, route performance, delivery exception metrics)
-- Power BI-ready outputs at `(p_date, region_code, carrier_id)` grain
+- Power BI-ready outputs at documented table-specific grains, including
+  `(p_date, region_code, carrier_id)` for the daily delivery KPI
 - Maps to existing `src/transport_etl/transform/build_*.py` modules and `sql/kpi/`
 
 ## Unity Catalog Naming Convention (Databricks only)
@@ -109,10 +112,10 @@ Catalog, schema, and table names are always **configuration-driven**. They must 
 - Curated Bronze, Silver, and Gold tables
 - Documented data lineage across all layers
 - KPI outputs: carrier performance, route performance, delivery exception analysis
-- Late-shipment risk model with chronologically valid evaluation (future phase)
-- DMAIC process-improvement case study (future phase)
-- Lakeflow Jobs workflow definition (future phase)
-- Declarative Automation Bundle configuration (future phase)
+- Late-shipment risk model with chronologically valid evaluation
+- DMAIC process-improvement case study
+- Lakeflow Jobs workflow definition
+- Declarative Automation Bundle configuration
 - Power BI data model documentation
 - Meaningful tests (unit, integration, data quality, SQL)
 - README with quickstart, architecture diagram, and execution instructions for all targets

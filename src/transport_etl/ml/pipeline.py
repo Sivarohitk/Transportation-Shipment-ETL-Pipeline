@@ -29,7 +29,7 @@ from transport_etl.ml.constants import (
     MODEL_LOGISTIC_REGRESSION,
 )
 from transport_etl.ml.evaluation import EvaluationReport, evaluate_dataframe
-from transport_etl.ml.features import build_feature_matrix, fill_missing_for_scoring
+from transport_etl.ml.features import build_feature_matrix
 from transport_etl.ml.scoring import score_shipments, score_summary
 from transport_etl.ml.splits import (
     SPLIT_TEST,
@@ -51,9 +51,9 @@ class TrainingAndScoreResult:
             is reported for completeness; the *primary* reported
             metrics are the test report because the test split is
             chronologically the latest and most realistic.
-        validation_report: Evaluation report on the validation
-            split.  Used for early stopping / threshold tuning in a
-            future phase.
+        validation_report: Evaluation report on the validation split,
+            retained for model comparison; this pipeline does not tune a
+            threshold on it.
         test_report: Evaluation report on the test split.  This is
             the *primary* reported result.
         scored: Output frame produced by :func:`score_shipments`.
@@ -107,10 +107,23 @@ def run_training_and_score(
             f"is_late length ({len(is_late)})"
         )
 
+    if "actual_delivery_ts" not in shipments.columns:
+        raise ValueError(
+            "actual_delivery_ts is required to establish when historical outcomes became observable"
+        )
+    actual_delivery = pd.to_datetime(shipments["actual_delivery_ts"], errors="coerce", utc=True)
+    if actual_delivery.isna().any():
+        raise ValueError(
+            "shipments contains unobserved outcomes; exclude or censor them before training"
+        )
+
     # 1) Build the feature matrix.  Historical aggregates use only
-    #    rows whose ``pickup_ts`` is strictly before the current
-    #    row's ``pickup_ts`` so the chronological contract holds.
-    features = build_feature_matrix(shipments, is_late=is_late)
+    #    completed outcomes observable before each pickup timestamp.
+    features = build_feature_matrix(
+        shipments,
+        is_late=is_late,
+        outcome_available_ts=actual_delivery,
+    )
 
     # 2) Chronological train / validation / test split.  The split
     #    column is added to the feature matrix.
@@ -128,11 +141,7 @@ def run_training_and_score(
     # 3) Train on the training split only.
     model = train_model(train_df, model_name=model_name)
 
-    # 4) Score every split.  The historical features are
-    #    pre-computed on the full feature matrix, so we do not
-    #    recompute them per split.  The chronological contract
-    #    remains intact because the historical aggregates were
-    #    computed once on the chronological feature matrix.
+    # 4) Score every split using the pre-computed as-of features.
     scored = score_shipments(
         model,
         features,
@@ -142,12 +151,7 @@ def run_training_and_score(
     # 5) Evaluate per split.  We compute the score probability per
     #    split and pass it through :func:`evaluate_dataframe`.
     def _report(name: str, split_df: pd.DataFrame) -> EvaluationReport:
-        # Fill nulls in the chronological historical features so the
-        # LR pipeline can score.  This is *not* leakage: the same
-        # imputation values are used at training time and at scoring
-        # time.
-        filled = fill_missing_for_scoring(split_df)
-        split_proba = model.predict_proba(filled)
+        split_proba = model.predict_proba(split_df)
         # Build a temp frame that has the predicted probability and
         # the ground-truth label so :func:`evaluate_dataframe` can
         # pick them up.

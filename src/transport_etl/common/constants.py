@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 # Base paths
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+RESOURCE_BASE_PATH_ENV = "TRANSPORT_ETL_RESOURCE_BASE_PATH"
+TEST_QUARANTINE_BASE_PATH_ENV = "TRANSPORT_ETL_TEST_QUARANTINE_BASE_PATH"
 CONFIG_DIR = PROJECT_ROOT / "config"
 SPARK_PROFILE_DIR = CONFIG_DIR / "spark"
 
@@ -39,6 +42,10 @@ TABLE_KPI_DELIVERY_DAILY = "kpi_delivery_daily"
 TABLE_GOLD_CARRIER_PERFORMANCE = "carrier_performance"
 TABLE_GOLD_ROUTE_PERFORMANCE = "route_performance"
 TABLE_GOLD_DELIVERY_EXCEPTION_SUMMARY = "delivery_exception_summary"
+
+# Compatibility fallback used only when a caller supplies a partial local
+# configuration instead of loading the environment YAML files.
+DEFAULT_LOCAL_CURATED_BASE_PATH = "data/local/curated"
 GOLD_ANALYTICS_TABLE_NAMES: tuple[str, ...] = (
     TABLE_GOLD_CARRIER_PERFORMANCE,
     TABLE_GOLD_ROUTE_PERFORMANCE,
@@ -131,6 +138,13 @@ DEFAULT_CSV_OPTIONS: dict[str, str] = {
     "mode": "PERMISSIVE",
     "timestampFormat": "yyyy-MM-dd'T'HH:mm:ssX",
 }
+
+
+def resolve_resource_path(*parts: str) -> Path:
+    """Resolve a repository resource using an optional runtime root override."""
+    root = Path(os.environ.get(RESOURCE_BASE_PATH_ENV, str(PROJECT_ROOT)))
+    return root.joinpath(*parts)
+
 
 # Logging defaults
 DEFAULT_LOG_LEVEL = "INFO"

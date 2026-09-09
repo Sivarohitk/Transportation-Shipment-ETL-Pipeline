@@ -61,5 +61,7 @@ logging:
 
 quality:
   fail_on_schema_drift: true
-  fail_on_duplicate_primary_keys: true
+  # Multiple updates for a business key are expected within a batch; Silver
+  # resolves them deterministically and quarantines superseded rows.
+  fail_on_duplicate_primary_keys: false
   fail_on_required_nulls: true

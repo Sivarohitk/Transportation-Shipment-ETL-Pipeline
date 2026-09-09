@@ -103,9 +103,10 @@ def _resolve_bad_records_path(
     """
     if not base_path:
         return None
+    normalized_base = str(base_path).rstrip("/\\")
     if run_date:
-        return f"{str(base_path).rstrip('/\\')}/p_date={run_date}"
-    return f"{str(base_path).rstrip('/\\')}/{entity}"
+        return f"{normalized_base}/p_date={run_date}"
+    return f"{normalized_base}/{entity}"
 
 
 def _log_summary(df: DataFrame, entity: str, source_file: str) -> int:
@@ -132,6 +133,7 @@ def build_bronze_shipments(
     quarantine_path: str | None = None,
     read_options: Mapping[str, Any] | None = None,
     bad_record_write_config: Mapping[str, Any] | None = None,
+    schema_def: Mapping[str, Any] | None = None,
 ) -> DataFrame:
     """Build a Bronze DataFrame for the shipments entity.
 
@@ -161,6 +163,7 @@ def build_bronze_shipments(
         bad_records_path=bad_path,
         read_options=read_options,
         bad_record_write_config=bad_record_write_config,
+        schema_def=schema_def,
     )
     bronze_df = _attach_metadata(
         df=raw_df,
@@ -182,6 +185,7 @@ def build_bronze_carriers(
     quarantine_path: str | None = None,
     read_options: Mapping[str, Any] | None = None,
     bad_record_write_config: Mapping[str, Any] | None = None,
+    schema_def: Mapping[str, Any] | None = None,
 ) -> DataFrame:
     """Build a Bronze DataFrame for the carriers entity."""
     _require_spark()
@@ -194,6 +198,7 @@ def build_bronze_carriers(
         bad_records_path=bad_path,
         read_options=read_options,
         bad_record_write_config=bad_record_write_config,
+        schema_def=schema_def,
     )
     bronze_df = _attach_metadata(
         df=raw_df,
@@ -215,6 +220,7 @@ def build_bronze_delivery_events(
     quarantine_path: str | None = None,
     read_options: Mapping[str, Any] | None = None,
     bad_record_write_config: Mapping[str, Any] | None = None,
+    schema_def: Mapping[str, Any] | None = None,
 ) -> DataFrame:
     """Build a Bronze DataFrame for the delivery_events entity."""
     _require_spark()
@@ -227,6 +233,7 @@ def build_bronze_delivery_events(
         bad_records_path=bad_path,
         read_options=read_options,
         bad_record_write_config=bad_record_write_config,
+        schema_def=schema_def,
     )
     bronze_df = _attach_metadata(
         df=raw_df,

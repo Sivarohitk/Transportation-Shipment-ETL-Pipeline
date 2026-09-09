@@ -36,6 +36,18 @@ from transport_etl.transform.build_route_performance import build_route_performa
 # ---------------------------------------------------------------------------
 
 
+def test_delivery_event_partition_date_matches_shipment_cohort(
+    curated_frames: dict[str, object],
+) -> None:
+    """Event KPIs must join to the pickup cohort used by shipment facts."""
+    events = curated_frames["fct_delivery_event"].select("shipment_id", "p_date").alias("events")
+    shipments = curated_frames["fct_shipment"].select("shipment_id", "p_date").alias("shipments")
+    mismatches = events.join(shipments, on="shipment_id", how="inner").where(
+        events["p_date"] != shipments["p_date"]
+    )
+    assert mismatches.count() == 0
+
+
 class TestCarrierPerformanceBuilder:
     """Validate grain, metrics, and edge cases for the carrier_performance table."""
 
@@ -331,6 +343,19 @@ class TestDeliveryExceptionSummaryBuilder:
             F.col("is_exception_event_type")
             != F.col("event_type").isin(list(DELIVERY_EXCEPTION_EVENT_TYPES))
         ).collect()
+        assert bad == []
+
+    def test_event_fact_exception_flag_uses_documented_categories(
+        self, curated_frames: dict[str, object]
+    ) -> None:
+        from pyspark.sql import functions as F
+
+        event = curated_frames["fct_delivery_event"]
+        bad = event.filter(
+            F.col("exception_flag")
+            != F.col("event_type").isin(list(DELIVERY_EXCEPTION_EVENT_TYPES)).cast("int")
+        ).collect()
+
         assert bad == []
 
     def test_rate_zero_when_no_shipments(self, curated_frames: dict[str, object]) -> None:

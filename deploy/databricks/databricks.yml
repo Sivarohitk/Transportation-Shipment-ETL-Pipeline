@@ -1,147 +1,84 @@
-# Databricks Declarative Automation Bundle for the Transport Shipment ETL
-#
-# This bundle is the deployment configuration that a workspace
-# operator runs through the Databricks CLI:
-#
-#     databricks bundle validate
-#     databricks bundle deploy --target dev
-#     databricks bundle run transport_etl_job
-#
-# Terminology
-# -----------
-# "Declarative Automation Bundles" is the current Databricks name for
-# what was previously called "Databricks Asset Bundles" (DAB).  The
-# YAML schema in this file is the same; the tooling is the same; only
-# the marketing name changed.
-#
-# Design principles
-# -----------------
-# 1. **No credentials.**  No tokens, hosts, account IDs, or workspace
-#    URLs are committed.  Operators supply them at deploy-time via
-#    the Databricks CLI profile, environment variables, or
-#    a non-committed override file (see targets/).
-# 2. **No pipeline duplication.**  Tasks invoke the existing
-#    ``transport-etl`` and ``transport-etl-ml`` console scripts
-#    installed from this repository's Python wheel.  No notebook
-#    copies of the pipeline logic.
-# 3. **Configuration-driven.**  Catalog, schema, and storage paths
-#    are variables so dev / staging / prod targets override them
-#    without touching this file.
-# 4. **Reproducible.**  ``include`` is locked to the current commit
-#    so the bundle always deploys the exact code that was reviewed.
+# Databricks Declarative Automation Bundle for the transport ETL pipeline.
+# The workspace host and OAuth credentials are supplied by the selected CLI
+# profile and are intentionally absent from this repository.
 
 bundle:
   name: transport_etl_bundle
-  # The version is bumped manually when we cut a release.  We
-  # deliberately do *not* tie it to a calendar date because the
-  # bundle is meant to be reviewed and released on a deliberate
-  # cadence (see docs/databricks_deployment.md).
-  version: 0.1.0
+  uuid: 2f3a8c1d-4e5b-4a2f-9c8d-1a2b3c4d5e6f
 
-# The bundle's source layout.  ``include`` is a glob set, evaluated
-# relative to the bundle root (this directory).  We include the
-# pipeline code, the config files, the schemas, and the bundle
-# resources themselves.  Generated data and the build artifacts are
-# excluded.
+# Include only bundle configuration fragments. Application files are handled
+# by the wheel artifact or the sync configuration below.
 include:
-  - ../config/base.yaml
-  - ../config/databricks.yaml
-  - ../config/logging.yaml
-  - ../config/schemas/*.json
-  - ../../src/transport_etl/**/*.py
-  - ../../src/transport_etl/**/*.sql
   - resources/*.yml
   - targets/*.yml
-  - ../../pyproject.toml
 
-# Exclude generated artefacts and local-only files.
-exclude:
-  - "**/__pycache__/**"
-  - "**/.pytest_cache/**"
-  - "**/*.pyc"
-  - "data/generated/**"
-  - "data/local/**"
-  - "**/.gitkeep"
+# These external directories make the repository root the synchronization
+# root. Python application code is delivered in the wheel rather than synced.
+sync:
+  paths:
+    - ../../config
+    - ../../data/sample
+    - ../../sql/staging
+    - ../../tests
 
-# Variables exposed to all targets and resources.  Operators
-# override these at deploy time (see targets/dev.yml /
-# targets/prod.yml for the per-target defaults).
-variables:
-  # The wheel file produced by ``pip wheel`` (or the editable
-  # install).  The path is relative to the bundle root.
-  wheel_path: "./dist/transport_shipment_etl-0.1.0-py3-none-any.whl"
-  # The Python entry point scripts.  These match the console
-  # scripts registered in pyproject.toml.
-  etl_entry_point: "transport-etl"
-  ml_entry_point: "transport-etl-ml"
-  # The full --config argument.  The value is overridden per target.
-  config_path: "../config/databricks.yaml"
-  # Runtime parameters consumed by ``run_daily_batch`` and the
-  # ML CLI.  ``run_date`` is passed in by the Lakeflow job as a
-  # job parameter; the other knobs are dev / prod overrides.
-  run_date: ""
-  raw_base_path: ""
-  reference_base_path: ""
-  staging_base_path: ""
-  curated_base_path: ""
-  audit_base_path: ""
-  spark_profile: "databricks"
-  hive_database: "curated"
-  # The ML score threshold for the binary ``predicted_late`` column.
-  # Mirrors ``DEFAULT_DECISION_THRESHOLD`` in
-  # ``transport_etl.ml.constants``.
-  ml_decision_threshold: "0.25"
-
-# A Python wheel is the recommended way to ship the pipeline into
-# a Databricks cluster.  ``build_commands`` runs once on the local
-# machine before ``databricks bundle deploy`` uploads the artefact.
-# The wheel is git-ignored (``build/`` and ``dist/``).
-python:
-  # The Databricks CLI runs these commands from the bundle root.
-  # We deliberately run ``pip wheel`` so the wheel is reproducible
-  # (no editable-install artifacts) and the cluster starts from a
-  # clean module every time.
-  build_commands:
-    - "pip wheel --no-deps --wheel-dir dist ."
-
-# The cluster / job environment.  We do **not** define a fixed
-# cluster here because Databricks recommends using a job cluster
-# that is created on-demand and torn down on completion.  The
-# Lakeflow job below uses ``job_cluster`` tags so the runtime
-# settings are explicit.
+# Artifact.path is evaluated from deploy/databricks, so ../.. is the actual
+# Python project root containing pyproject.toml. The explicit files entry tells
+# the current CLI which wheel the artifact build produces.
 artifacts:
-  # The wheel produced by ``python.build_commands``.
-  - path: "./dist/transport_shipment_etl-0.1.0-py3-none-any.whl"
-    type: "whl"
+  python_wheel:
+    type: whl
+    path: ../..
+    build: python -m pip wheel --no-deps --wheel-dir deploy/databricks/dist .
+    files:
+      - source: dist/transport_shipment_etl-0.1.0-py3-none-any.whl
 
-# Mappings to target-specific overrides.  The default behaviour is
-# intentionally minimal; the real workspace settings (host, token)
-# are provided by the operator's CLI profile (``databricks configure``).
+variables:
+  etl_entry_point:
+    default: transport-etl
+  ml_entry_point:
+    default: transport-etl-ml
+  dq_entry_point:
+    default: transport-etl-data-quality
+  environment:
+    default: dev
+  catalog_name:
+    description: Existing Unity Catalog catalog used by managed Delta tables.
+    default: workspace
+  bronze_schema:
+    description: Existing schema for Bronze managed tables.
+    default: bronze_dev
+  silver_schema:
+    description: Existing schema for Silver managed tables.
+    default: silver_dev
+  gold_schema:
+    description: Existing schema for Gold managed tables.
+    default: gold_dev
+  file_schema:
+    description: Existing schema containing the input Unity Catalog Volume.
+    default: default
+  volume_name:
+    description: Existing Unity Catalog Volume for input, quarantine, and ML files.
+    default: transport_etl
+  raw_base_path:
+    default: /Volumes/${var.catalog_name}/${var.file_schema}/${var.volume_name}/raw
+  reference_base_path:
+    default: /Volumes/${var.catalog_name}/${var.file_schema}/${var.volume_name}/reference
+  staging_base_path:
+    default: /Volumes/${var.catalog_name}/${var.file_schema}/${var.volume_name}/staging
+  curated_base_path:
+    description: Compatibility path; managed Delta table writers do not use it.
+    default: /Volumes/${var.catalog_name}/${var.file_schema}/${var.volume_name}/curated
+  audit_base_path:
+    default: /Volumes/${var.catalog_name}/${var.file_schema}/${var.volume_name}/audit
+  ml_shipments_path:
+    description: CSV input for the existing file-based late-risk CLI.
+    default: /Volumes/${var.catalog_name}/${var.file_schema}/${var.volume_name}/ml/shipments.csv
+  ml_decision_threshold:
+    default: "0.25"
+
 targets:
   dev:
     default: true
     mode: development
-    workspace:
-      # Placeholder; the operator's CLI profile supplies the real
-      # host URL at deploy time.
-      host: "https://<your-workspace>.cloud.databricks.com"
-    variables:
-      run_date: "{{job.run_date}}"
-      raw_base_path: "dbfs:/mnt/transport/dev/raw"
-      reference_base_path: "dbfs:/mnt/transport/dev/reference"
-      staging_base_path: "dbfs:/mnt/transport/dev/staging"
-      curated_base_path: "dbfs:/mnt/transport/dev/curated"
-      audit_base_path: "dbfs:/mnt/transport/dev/logs"
-      hive_database: "curated_dev"
   prod:
     mode: production
-    workspace:
-      host: "https://<your-workspace>.cloud.databricks.com"
-    variables:
-      run_date: "{{job.run_date}}"
-      raw_base_path: "dbfs:/mnt/transport/prod/raw"
-      reference_base_path: "dbfs:/mnt/transport/prod/reference"
-      staging_base_path: "dbfs:/mnt/transport/prod/staging"
-      curated_base_path: "dbfs:/mnt/transport/prod/curated"
-      audit_base_path: "dbfs:/mnt/transport/prod/logs"
-      hive_database: "curated_prod"

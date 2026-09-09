@@ -12,6 +12,7 @@ This guide shows how to package, upload, and run the ETL pipeline on Amazon EMR 
 - Local tooling:
   - PowerShell 7+ (for packaging/upload scripts on Windows)
   - Bash shell (for EMR create/submit/terminate scripts)
+  - Python 3 (used to render the configured Spark event-log URI)
 
 No credentials should be hardcoded in scripts or JSON files.
 
@@ -22,7 +23,7 @@ Set placeholders before running scripts:
 export AWS_REGION="us-east-1"
 export ARTIFACT_BUCKET="YOUR_ARTIFACT_BUCKET"
 export DATA_BUCKET="YOUR_DATA_BUCKET"
-export LOG_BUCKET="YOUR_LOG_BUCKET"
+export EMR_LOG_URI="s3://YOUR_LOG_BUCKET/emr/logs"
 export ARTIFACT_PREFIX="transport-etl"
 export EMR_CLUSTER_NAME="transport-etl-prod"
 export EMR_SUBNET_ID="subnet-xxxxxxxx"
@@ -66,6 +67,8 @@ bash ./deploy/emr/scripts/create_cluster.sh
 ```
 
 The script prints a `CLUSTER_ID` and writes it to `.emr_cluster_id`.
+It renders `spark.eventLog.dir` beneath `EMR_LOG_URI`; the checked-in
+JSON remains a credential-free template.
 
 ## 6. Submit Daily Job
 ```bash
@@ -94,6 +97,9 @@ aws emr list-steps --cluster-id "$CLUSTER_ID" --region "$AWS_REGION"
   - `s3://YOUR_DATA_BUCKET/transport/curated/fct_delivery_event/`
   - `s3://YOUR_DATA_BUCKET/transport/curated/agg_shipment_daily/`
   - `s3://YOUR_DATA_BUCKET/transport/curated/kpi_delivery_daily/`
+  - `s3://YOUR_DATA_BUCKET/transport/curated/carrier_performance/`
+  - `s3://YOUR_DATA_BUCKET/transport/curated/route_performance/`
+  - `s3://YOUR_DATA_BUCKET/transport/curated/delivery_exception_summary/`
 
 ## 9. Terminate Cluster
 ```bash

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from pathlib import Path
 from typing import Any, Mapping
 
 from transport_etl.common.config import load_config
@@ -44,9 +45,14 @@ def run_backfill_batch(
     start_date: str | None,
     end_date: str | None,
     overrides: Mapping[str, Any] | None = None,
+    config_dir: str | Path | None = None,
 ) -> int:
     """Run backfill ETL workflow over an inclusive date window."""
-    loaded_config = load_config(config_path)
+    loaded_config = (
+        load_config(config_path, config_dir=config_dir)
+        if config_dir is not None
+        else load_config(config_path)
+    )
     config = _apply_overrides(loaded_config, overrides)
 
     logging_config = config.get("logging", {}) if isinstance(config.get("logging"), Mapping) else {}
@@ -83,6 +89,7 @@ def run_backfill_batch(
         logger.info("Backfill executing date=%s", run_date)
         status = run_daily_batch(
             config_path=config_path,
+            config_dir=config_dir,
             run_date=run_date,
             overrides=overrides,
         )

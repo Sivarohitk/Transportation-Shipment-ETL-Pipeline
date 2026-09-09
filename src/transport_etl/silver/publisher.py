@@ -42,6 +42,7 @@ except ModuleNotFoundError:  # pragma: no cover
 
 from transport_etl.common.catalog import is_databricks, resolve_table_name
 from transport_etl.common.constants import (
+    DEFAULT_LOCAL_CURATED_BASE_PATH,
     SILVER_TABLE_NAMES,
     TABLE_SILVER_CARRIERS,
     TABLE_SILVER_DELIVERY_EVENTS,
@@ -59,7 +60,7 @@ def _resolve_silver_base_path(config: Mapping[str, Any]) -> str:
     staging = paths.get("staging_base_path") or paths.get("curated_base_path")
     if staging:
         return str(staging)
-    return "data/local/curated"
+    return DEFAULT_LOCAL_CURATED_BASE_PATH
 
 
 def _resolve_silver_database(config: Mapping[str, Any]) -> str:
@@ -97,7 +98,8 @@ def _publish_local(
     database = _resolve_silver_database(config)
     resolved_table = resolve_table_name(config=config, layer="silver", table=table_name)
     base_path = _resolve_silver_base_path(config)
-    output_path = f"{base_path.rstrip('/\\')}/{table_name}"
+    normalized_base = base_path.rstrip("/\\")
+    output_path = f"{normalized_base}/{table_name}"
 
     return write_partitioned_table(
         df=df,
@@ -162,9 +164,9 @@ def publish_silver_table(
         table_name: Silver logical table name (one of
             :data:`transport_etl.common.constants.SILVER_TABLE_NAMES`).
         spark: Optional SparkSession.  Required when targeting Databricks.
-        partitions: Partition columns.  Defaults to an empty list (the
-            publish writer does not enforce partitioning; callers can
-            opt in via configuration).
+        partitions: Optional partition columns for local/EMR Parquet writes.
+            Databricks Silver managed MERGE targets are not physically
+            partitioned by this publisher.
         mode: Spark write mode (Parquet path only).
         writer_options: Optional Spark writer options (Parquet path only).
         write_config: Optional write-fallback configuration (Parquet path only).

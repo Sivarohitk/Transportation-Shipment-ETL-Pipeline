@@ -17,6 +17,7 @@ except ModuleNotFoundError:  # pragma: no cover - allows import in non-Spark env
     F = None  # type: ignore[assignment]
     T = None  # type: ignore[assignment]
 
+from transport_etl.common.constants import resolve_resource_path
 from transport_etl.common.io import (
     ensure_local_dir,
     is_cloud_path,
@@ -25,9 +26,6 @@ from transport_etl.common.io import (
 )
 
 LOGGER = logging.getLogger(__name__)
-_SCHEMA_PATH = (
-    Path(__file__).resolve().parents[3] / "config" / "schemas" / "delivery_events.schema.json"
-)
 _CORRUPT_COL = "_corrupt_record"
 
 
@@ -38,10 +36,14 @@ def _require_spark() -> None:
 
 
 def load_delivery_events_schema_definition(
-    schema_path: str | Path = _SCHEMA_PATH,
+    schema_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Load the delivery events schema definition JSON."""
-    path = Path(schema_path)
+    path = (
+        Path(schema_path)
+        if schema_path is not None
+        else resolve_resource_path("config", "schemas", "delivery_events.schema.json")
+    )
     if not path.exists():
         raise FileNotFoundError(f"Delivery event schema file not found: {path}")
 
@@ -318,6 +320,7 @@ def read_delivery_events_raw(
     bad_records_path: str | None = None,
     read_options: Mapping[str, Any] | None = None,
     bad_record_write_config: Mapping[str, Any] | None = None,
+    schema_def: Mapping[str, Any] | None = None,
 ) -> DataFrame:
     """Read, clean, and validate delivery event raw data for staging.
 
@@ -325,7 +328,7 @@ def read_delivery_events_raw(
     quarantine path via `bad_records_path`.
     """
     _require_spark()
-    schema_def = load_delivery_events_schema_definition()
+    schema_def = dict(schema_def or load_delivery_events_schema_definition())
 
     options = {
         **dict(schema_def.get("options", {})),

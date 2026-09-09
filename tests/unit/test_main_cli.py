@@ -16,8 +16,13 @@ def test_build_overrides_maps_cli_flags() -> None:
         reference_base_path="ref-path",
         staging_base_path="stage-path",
         curated_base_path="curated-path",
-        spark_profile="local",
+        resource_base_path="workspace-files",
+        spark_profile="databricks",
         hive_database="curated_dev",
+        catalog="workspace",
+        bronze_schema="bronze_dev",
+        silver_schema="silver_dev",
+        gold_schema="gold_dev",
         fail_fast=False,
         register_hive=False,
     )
@@ -29,8 +34,13 @@ def test_build_overrides_maps_cli_flags() -> None:
         "paths.reference_base_path": "ref-path",
         "paths.staging_base_path": "stage-path",
         "paths.curated_base_path": "curated-path",
-        "spark.profile": "local",
+        "runtime.resource_base_path": "workspace-files",
+        "spark.profile": "databricks",
         "hive.database": "curated_dev",
+        "unity_catalog.catalog": "workspace",
+        "unity_catalog.bronze_schema": "bronze_dev",
+        "unity_catalog.silver_schema": "silver_dev",
+        "unity_catalog.gold_schema": "gold_dev",
         "runtime.fail_fast": False,
         "hive.register_tables": False,
     }
@@ -44,10 +54,12 @@ def test_main_dispatches_daily_job(monkeypatch: pytest.MonkeyPatch) -> None:
         config_path: str,
         run_date: str | None = None,
         overrides: dict[str, object] | None = None,
+        config_dir: object | None = None,
     ) -> int:
         recorded["config_path"] = config_path
         recorded["run_date"] = run_date
         recorded["overrides"] = overrides
+        recorded["config_dir"] = config_dir
         return 0
 
     monkeypatch.setattr(cli, "run_daily_batch", fake_run_daily_batch)
@@ -58,6 +70,8 @@ def test_main_dispatches_daily_job(monkeypatch: pytest.MonkeyPatch) -> None:
             "daily",
             "--config",
             "config/dev.yaml",
+            "--config-dir",
+            "config",
             "--run-date",
             "2026-01-01",
             "--no-register-hive",
@@ -68,6 +82,7 @@ def test_main_dispatches_daily_job(monkeypatch: pytest.MonkeyPatch) -> None:
     assert recorded["config_path"] == "config/dev.yaml"
     assert recorded["run_date"] == "2026-01-01"
     assert recorded["overrides"] == {"hive.register_tables": False}
+    assert str(recorded["config_dir"]) == "config"
 
 
 def test_main_dispatches_backfill_job(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -79,11 +94,13 @@ def test_main_dispatches_backfill_job(monkeypatch: pytest.MonkeyPatch) -> None:
         start_date: str | None,
         end_date: str | None,
         overrides: dict[str, object] | None = None,
+        config_dir: object | None = None,
     ) -> int:
         recorded["config_path"] = config_path
         recorded["start_date"] = start_date
         recorded["end_date"] = end_date
         recorded["overrides"] = overrides
+        recorded["config_dir"] = config_dir
         return 0
 
     monkeypatch.setattr(cli, "run_backfill_batch", fake_run_backfill_batch)
@@ -108,3 +125,14 @@ def test_main_dispatches_backfill_job(monkeypatch: pytest.MonkeyPatch) -> None:
     assert recorded["start_date"] == "2026-01-01"
     assert recorded["end_date"] == "2026-01-02"
     assert recorded["overrides"] == {"spark.profile": "local"}
+    assert recorded["config_dir"] is None
+
+
+def test_main_raises_for_nonzero_status_when_requested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Databricks wheel tasks must surface returned failures as exceptions."""
+    monkeypatch.setattr(cli, "run_daily_batch", lambda **kwargs: 1)
+
+    with pytest.raises(RuntimeError, match="status 1"):
+        cli.main(["--job", "daily", "--raise-on-error"])

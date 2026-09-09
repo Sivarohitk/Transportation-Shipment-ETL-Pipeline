@@ -47,6 +47,7 @@ def _build_dataset(n: int, *, seed: int = 0) -> tuple[pd.DataFrame, pd.Series]:
             "origin_state": rng.choice(["CA", "TX", "NY"], size=n),
             "destination_state": rng.choice(["NV", "OH", "FL"], size=n),
             "promised_delivery_ts": [t + pd.Timedelta(hours=24) for t in pickup_ts],
+            "actual_delivery_ts": [t + pd.Timedelta(minutes=30) for t in pickup_ts],
             "distance_miles": rng.uniform(100, 1500, size=n),
             "shipping_cost_usd": rng.uniform(50, 2000, size=n),
             "region_code": "UNKNOWN",
@@ -139,6 +140,21 @@ class TestTrainModel:
         model = train_model(minimal, model_name=MODEL_LOGISTIC_REGRESSION)
         proba = model.predict_proba(minimal)
         assert proba.shape == (50,)
+
+    def test_prediction_imputation_is_independent_of_scoring_batch(self) -> None:
+        features, _ = _build_dataset(200)
+        model = train_model(features.iloc[:140], model_name=MODEL_LOGISTIC_REGRESSION)
+        row = features.iloc[[150]].copy()
+        row["carrier_historical_late_rate"] = np.nan
+        row["route_historical_late_rate"] = np.nan
+        companion = features.iloc[[180]].copy()
+        companion["carrier_historical_late_rate"] = 1.0
+        companion["route_historical_late_rate"] = 1.0
+
+        alone = model.predict_proba(row)[0]
+        with_companion = model.predict_proba(pd.concat([row, companion], ignore_index=True))[0]
+
+        assert alone == pytest.approx(with_companion, abs=1e-15)
 
 
 class TestLateRiskModelSaveLoad:

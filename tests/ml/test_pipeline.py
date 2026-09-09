@@ -53,6 +53,7 @@ def _build_frame(n: int, *, seed: int = 20260101) -> tuple[pd.DataFrame, pd.Seri
                 "origin_state": s.origin_state,
                 "destination_state": s.destination_state,
                 "promised_delivery_ts": s.promised_delivery_ts,
+                "actual_delivery_ts": s.actual_delivery_ts,
                 "distance_miles": s.distance_miles,
                 "shipping_cost_usd": s.shipping_cost_usd,
                 "region_code": "UNKNOWN",
@@ -96,15 +97,33 @@ class TestPipelineEndToEnd:
         assert isinstance(result, TrainingAndScoreResult)
         assert result.model.model_name == MODEL_HIST_GRADIENT_BOOSTING
 
-    def test_test_split_is_chronologically_latest(self) -> None:
+    def test_test_split_is_chronologically_latest(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import transport_etl.ml.pipeline as pipeline_module
+        from transport_etl.ml.splits import chronological_split as real_split
+
         shipments, is_late = _build_frame(800)
-        result = run_training_and_score(shipments, is_late=is_late)
-        # The test set's latest pickup timestamp must be the
-        # chronologically latest of the input.
-        test = result.scored.loc[
-            result.scored["pickup_ts"] >= result.scored["pickup_ts"].quantile(0.85)
-        ]
-        assert test["pickup_ts"].min() >= shipments["pickup_ts"].quantile(0.70)
+        shuffled = shipments.sample(frac=1.0, random_state=47)
+        shuffled_labels = is_late.loc[shuffled.index]
+        observed: dict[str, pd.DataFrame] = {}
+
+        def recording_split(frame: pd.DataFrame, **kwargs: object) -> pd.DataFrame:
+            split = real_split(frame, **kwargs)
+            observed["split"] = split
+            return split
+
+        monkeypatch.setattr(pipeline_module, "chronological_split", recording_split)
+
+        result = run_training_and_score(shuffled, is_late=shuffled_labels)
+
+        assigned = observed["split"]
+        train = assigned.loc[assigned["split"] == "train"]
+        validation = assigned.loc[assigned["split"] == "validation"]
+        test = assigned.loc[assigned["split"] == "test"]
+        assert train["pickup_ts"].max() < validation["pickup_ts"].min()
+        assert validation["pickup_ts"].max() < test["pickup_ts"].min()
+        assert result.train_report.row_count == len(train)
+        assert result.validation_report.row_count == len(validation)
+        assert result.test_report.row_count == len(test)
 
     def test_split_labels_partition_input(self) -> None:
         shipments, is_late = _build_frame(800)
@@ -142,6 +161,22 @@ class TestPipelineEndToEnd:
         with pytest.raises(ValueError, match="length"):
             run_training_and_score(shipments, is_late=is_late.iloc[:50])
 
+    def test_rejects_unobserved_outcomes(self) -> None:
+        shipments, is_late = _build_frame(100)
+        shipments.loc[shipments.index[0], "actual_delivery_ts"] = None
+
+        with pytest.raises(ValueError, match="unobserved outcomes"):
+            run_training_and_score(shipments, is_late=is_late)
+
+    def test_requires_outcome_availability_column(self) -> None:
+        shipments, is_late = _build_frame(100)
+
+        with pytest.raises(ValueError, match="actual_delivery_ts is required"):
+            run_training_and_score(
+                shipments.drop(columns=["actual_delivery_ts"]),
+                is_late=is_late,
+            )
+
     def test_scored_frame_contains_every_input_shipment(self) -> None:
         shipments, is_late = _build_frame(500)
         result = run_training_and_score(shipments, is_late=is_late)
@@ -163,6 +198,24 @@ class TestPipelineEndToEnd:
 
 
 class TestCLI:
+    def test_loader_excludes_shipments_without_observed_outcomes(self, tmp_path: Path) -> None:
+        from transport_etl.ml.cli import _load_shipments
+
+        path = tmp_path / "shipments.csv"
+        pd.DataFrame(
+            {
+                "shipment_id": ["KNOWN", "OPEN"],
+                "pickup_ts": ["2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z"],
+                "promised_delivery_ts": ["2026-01-03T00:00:00Z"] * 2,
+                "actual_delivery_ts": ["2026-01-04T00:00:00Z", None],
+            }
+        ).to_csv(path, index=False)
+
+        shipments, labels = _load_shipments(path)
+
+        assert shipments["shipment_id"].tolist() == ["KNOWN"]
+        assert labels.tolist() == [1]
+
     def test_cli_runs(self, tmp_path: Path) -> None:
         # Generate a small synthetic dataset and write to disk.
         gen_dir = tmp_path / "gen"

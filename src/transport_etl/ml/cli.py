@@ -117,9 +117,21 @@ def _load_shipments(path: Path) -> tuple[pd.DataFrame, pd.Series]:
         raise ValueError(f"shipments file {path} is missing the 'promised_delivery_ts' column")
     actual = pd.to_datetime(df["actual_delivery_ts"], errors="coerce", utc=True)
     promised = pd.to_datetime(df["promised_delivery_ts"], errors="coerce", utc=True)
-    is_late = (actual > promised).astype(int)
-    is_late[actual.isna()] = 0  # unknown outcome -> not late
-    return df, is_late
+    observed = actual.notna() & promised.notna()
+    excluded_count = int((~observed).sum())
+    if excluded_count:
+        LOGGER.warning(
+            "Excluding %d shipments without an observed delivery outcome",
+            excluded_count,
+        )
+    if not observed.any():
+        raise ValueError("shipments file contains no observed delivery outcomes")
+
+    resolved = df.loc[observed].reset_index(drop=True)
+    resolved_actual = actual.loc[observed].reset_index(drop=True)
+    resolved_promised = promised.loc[observed].reset_index(drop=True)
+    is_late = (resolved_actual > resolved_promised).astype(int).rename("is_late")
+    return resolved, is_late
 
 
 def _cmd_train_and_score(args: argparse.Namespace) -> int:

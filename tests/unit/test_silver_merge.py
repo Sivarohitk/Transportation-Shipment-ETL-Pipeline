@@ -19,6 +19,7 @@ from transport_etl.common.constants import (
 )
 from transport_etl.silver.merge import (
     build_silver_merge_spec,
+    execute_silver_merge,
     render_silver_merge_sql,
 )
 from transport_etl.silver.merge_spec import SilverMergeSpec
@@ -89,6 +90,50 @@ class TestBuildSilverMergeSpec:
                 all_columns=["x"],
                 source_view="v",
             )
+
+
+class TestExecuteSilverMerge:
+    def test_first_load_creates_delta_table_before_merge_is_needed(self) -> None:
+        class FakeCatalog:
+            @staticmethod
+            def tableExists(table_name: str) -> bool:
+                assert table_name == "supply_chain.silver.stg_shipments"
+                return False
+
+        class FakeSpark:
+            catalog = FakeCatalog()
+
+            def __init__(self) -> None:
+                self.statements: list[str] = []
+
+            def sql(self, statement: str) -> None:
+                self.statements.append(statement)
+
+        class FakeDataFrame:
+            def __init__(self) -> None:
+                self.views: list[str] = []
+
+            def createOrReplaceTempView(self, name: str) -> None:
+                self.views.append(name)
+
+        spark = FakeSpark()
+        source = FakeDataFrame()
+
+        sql = execute_silver_merge(
+            spark,
+            source,
+            target_table="supply_chain.silver.stg_shipments",
+            table_name=TABLE_SILVER_SHIPMENTS,
+            all_columns=["shipment_id", "carrier_id"],
+        )
+
+        assert source.views == ["silver_stg_shipments"]
+        assert spark.statements == [sql]
+        assert sql == (
+            "CREATE TABLE `supply_chain`.`silver`.`stg_shipments` USING DELTA "
+            "AS SELECT * FROM `silver_stg_shipments`"
+        )
+        assert "MERGE INTO" not in sql
 
 
 # ---------------------------------------------------------------------------

@@ -34,6 +34,29 @@ if [[ ! -f "${CONFIG_FILE}" ]]; then
   exit 1
 fi
 
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "[create-cluster] ERROR: python3 not found."
+  exit 1
+fi
+
+RENDERED_CONFIG="$(mktemp)"
+trap 'rm -f "${RENDERED_CONFIG}"' EXIT
+
+SPARK_EVENT_LOG_URI="${EMR_LOG_URI%/}/spark-history/"
+python3 - "${CONFIG_FILE}" "${RENDERED_CONFIG}" "${SPARK_EVENT_LOG_URI}" <<'PY'
+import json
+import sys
+
+source_path, output_path, event_log_uri = sys.argv[1:]
+with open(source_path, encoding="utf-8") as source:
+    configuration = json.load(source)
+for item in configuration:
+    if item.get("Classification") == "spark-defaults":
+        item.setdefault("Properties", {})["spark.eventLog.dir"] = event_log_uri
+with open(output_path, "w", encoding="utf-8") as output:
+    json.dump(configuration, output)
+PY
+
 echo "[create-cluster] Creating cluster in region ${AWS_REGION}"
 echo "[create-cluster] Name: ${EMR_CLUSTER_NAME}"
 echo "[create-cluster] Log URI: ${EMR_LOG_URI}"
@@ -49,7 +72,7 @@ CLUSTER_ID="$(
     --ec2-attributes "InstanceProfile=${EMR_EC2_ROLE},SubnetId=${EMR_SUBNET_ID},KeyName=${EMR_EC2_KEY_NAME}" \
     --instance-groups "InstanceGroupType=MASTER,InstanceType=${MASTER_INSTANCE_TYPE},InstanceCount=1" \
                       "InstanceGroupType=CORE,InstanceType=${CORE_INSTANCE_TYPE},InstanceCount=${CORE_INSTANCE_COUNT}" \
-    --configurations "file://${CONFIG_FILE}" \
+    --configurations "file://${RENDERED_CONFIG}" \
     --bootstrap-actions "Path=${BOOTSTRAP_SCRIPT_S3_URI},Name=transport-etl-bootstrap,Args=[${BOOTSTRAP_ARTIFACT_URI}]" \
     --query "ClusterId" \
     --output text

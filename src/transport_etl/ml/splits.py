@@ -28,6 +28,7 @@ Contract
 from __future__ import annotations
 
 import math
+from bisect import bisect_left
 
 import pandas as pd
 
@@ -123,14 +124,48 @@ def chronological_split(
     sorted_df = sorted_df.sort_values(pickup_ts_column, kind="mergesort").reset_index(drop=True)
 
     n = len(sorted_df)
-    train_end = int(round(n * train_fraction))
-    # Guarantee the validation split is non-empty when ``n >= 3``.
-    val_end = min(n, train_end + int(round(n * validation_fraction)))
-    # Guarantee the test split is non-empty when ``n >= 3``.
-    if val_end == train_end and n > train_end:
-        val_end = train_end + 1
-    if val_end >= n:
-        val_end = n
+    target_train_end = int(round(n * train_fraction))
+    target_val_end = min(n, target_train_end + int(round(n * validation_fraction)))
+    timestamps = sorted_df[pickup_ts_column]
+    cohort_boundaries = [
+        index
+        for index in range(1, n)
+        if not (pd.isna(timestamps.iloc[index - 1]) and pd.isna(timestamps.iloc[index]))
+        and timestamps.iloc[index - 1] != timestamps.iloc[index]
+    ]
+
+    best_boundaries: tuple[int, int] | None = None
+    best_cost: tuple[int, int, int, int] | None = None
+    for train_end in cohort_boundaries:
+        if train_end < min_split_size or train_end > n - (2 * min_split_size):
+            continue
+        minimum_val_end = train_end + min_split_size
+        maximum_val_end = n - min_split_size
+        start = bisect_left(cohort_boundaries, minimum_val_end)
+        eligible = cohort_boundaries[start:]
+        if not eligible or eligible[0] > maximum_val_end:
+            continue
+        insertion = bisect_left(eligible, target_val_end)
+        for candidate_index in {max(0, insertion - 1), min(len(eligible) - 1, insertion)}:
+            val_end = eligible[candidate_index]
+            if val_end > maximum_val_end:
+                continue
+            cost = (
+                abs(train_end - target_train_end) + abs(val_end - target_val_end),
+                abs(train_end - target_train_end),
+                train_end,
+                val_end,
+            )
+            if best_cost is None or cost < best_cost:
+                best_cost = cost
+                best_boundaries = (train_end, val_end)
+
+    if best_boundaries is None:
+        raise ValueError(
+            "Chronological split cannot create three timestamp-distinct cohorts "
+            f"with the minimum {min_split_size} rows each"
+        )
+    train_end, val_end = best_boundaries
 
     labels: list[str] = [""] * n
     for i in range(train_end):

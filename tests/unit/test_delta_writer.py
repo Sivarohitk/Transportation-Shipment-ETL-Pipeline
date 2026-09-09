@@ -3,169 +3,15 @@
 These tests cover all pure-Python logic in ``publish/delta_writer.py`` and
 the ``output_format`` dispatch in ``publish/hive_writer.py``.
 
-Tests that require a live Databricks session (actual Delta writes, MERGE
-execution) are explicitly skipped when ``delta-spark`` is not installed.
-No mocking is used to simulate Databricks — see AGENTS.md rule 9.
+Actual Delta writes require a live Databricks session and are covered by
+workspace validation rather than mocked here.
 """
 
 from __future__ import annotations
 
 import pytest
 
-# ---------------------------------------------------------------------------
-# DeltaMergeSpec and build_merge_spec — no Spark dependency
-# ---------------------------------------------------------------------------
-from transport_etl.publish.delta_writer import (
-    DeltaMergeSpec,
-    build_merge_spec,
-    resolve_delta_write_mode,
-)
-
-
-class TestDeltaMergeSpec:
-    def test_merge_condition_single_key(self) -> None:
-        spec = DeltaMergeSpec(
-            target_table="sc.gold.fct_shipment",
-            merge_keys=("shipment_id",),
-        )
-        assert spec.merge_condition() == "target.shipment_id = source.shipment_id"
-
-    def test_merge_condition_composite_key(self) -> None:
-        spec = DeltaMergeSpec(
-            target_table="sc.gold.fct_delivery_event",
-            merge_keys=("event_id", "shipment_id"),
-        )
-        cond = spec.merge_condition()
-        assert "target.event_id = source.event_id" in cond
-        assert "target.shipment_id = source.shipment_id" in cond
-        assert " AND " in cond
-
-    def test_merge_condition_raises_when_no_keys(self) -> None:
-        spec = DeltaMergeSpec(
-            target_table="sc.gold.fct_shipment",
-            merge_keys=(),
-        )
-        with pytest.raises(ValueError, match="merge_keys must not be empty"):
-            spec.merge_condition()
-
-    def test_custom_aliases_used_in_condition(self) -> None:
-        spec = DeltaMergeSpec(
-            target_table="sc.gold.dim_carrier",
-            source_alias="src",
-            target_alias="tgt",
-            merge_keys=("carrier_id",),
-        )
-        assert spec.merge_condition() == "tgt.carrier_id = src.carrier_id"
-
-    def test_immutability(self) -> None:
-        spec = DeltaMergeSpec(
-            target_table="sc.gold.fct_shipment",
-            merge_keys=("shipment_id",),
-        )
-        with pytest.raises(Exception):
-            spec.target_table = "changed"  # type: ignore[misc]
-
-    def test_update_columns_none_means_all(self) -> None:
-        spec = DeltaMergeSpec(
-            target_table="sc.gold.fct_shipment",
-            merge_keys=("shipment_id",),
-            update_columns=None,
-        )
-        assert spec.update_columns is None
-
-    def test_update_columns_stored_as_tuple(self) -> None:
-        spec = DeltaMergeSpec(
-            target_table="sc.gold.fct_shipment",
-            merge_keys=("shipment_id",),
-            update_columns=("carrier_id", "region_code"),
-        )
-        assert spec.update_columns == ("carrier_id", "region_code")
-
-    def test_insert_all_on_not_matched_default_true(self) -> None:
-        spec = DeltaMergeSpec(
-            target_table="sc.gold.fct_shipment",
-            merge_keys=("shipment_id",),
-        )
-        assert spec.insert_all_on_not_matched is True
-
-
-class TestBuildMergeSpec:
-    def test_returns_delta_merge_spec(self) -> None:
-        spec = build_merge_spec(
-            target_table="supply_chain.gold.fct_shipment",
-            merge_keys=["shipment_id"],
-        )
-        assert isinstance(spec, DeltaMergeSpec)
-
-    def test_target_table_stored_stripped(self) -> None:
-        spec = build_merge_spec(
-            target_table="  supply_chain.gold.fct_shipment  ",
-            merge_keys=["shipment_id"],
-        )
-        assert spec.target_table == "supply_chain.gold.fct_shipment"
-
-    def test_merge_keys_stored_as_tuple(self) -> None:
-        spec = build_merge_spec(
-            target_table="supply_chain.gold.fct_shipment",
-            merge_keys=["shipment_id", "carrier_id"],
-        )
-        assert spec.merge_keys == ("shipment_id", "carrier_id")
-
-    def test_update_columns_as_tuple_when_provided(self) -> None:
-        spec = build_merge_spec(
-            target_table="supply_chain.gold.fct_shipment",
-            merge_keys=["shipment_id"],
-            update_columns=["carrier_id", "region_code"],
-        )
-        assert spec.update_columns == ("carrier_id", "region_code")
-
-    def test_update_columns_none_when_omitted(self) -> None:
-        spec = build_merge_spec(
-            target_table="supply_chain.gold.fct_shipment",
-            merge_keys=["shipment_id"],
-        )
-        assert spec.update_columns is None
-
-    def test_raises_on_empty_target_table(self) -> None:
-        with pytest.raises(ValueError, match="target_table must not be empty"):
-            build_merge_spec(target_table="", merge_keys=["shipment_id"])
-
-    def test_raises_on_whitespace_target_table(self) -> None:
-        with pytest.raises(ValueError, match="target_table must not be empty"):
-            build_merge_spec(target_table="   ", merge_keys=["shipment_id"])
-
-    def test_raises_on_empty_merge_keys(self) -> None:
-        with pytest.raises(ValueError, match="merge_keys must not be empty"):
-            build_merge_spec(
-                target_table="supply_chain.gold.fct_shipment",
-                merge_keys=[],
-            )
-
-    def test_custom_aliases_forwarded(self) -> None:
-        spec = build_merge_spec(
-            target_table="supply_chain.gold.dim_carrier",
-            merge_keys=["carrier_id"],
-            source_alias="incoming",
-            target_alias="existing",
-        )
-        assert spec.source_alias == "incoming"
-        assert spec.target_alias == "existing"
-
-    def test_insert_all_on_not_matched_default(self) -> None:
-        spec = build_merge_spec(
-            target_table="supply_chain.gold.fct_shipment",
-            merge_keys=["shipment_id"],
-        )
-        assert spec.insert_all_on_not_matched is True
-
-    def test_insert_all_on_not_matched_can_be_false(self) -> None:
-        spec = build_merge_spec(
-            target_table="supply_chain.gold.fct_shipment",
-            merge_keys=["shipment_id"],
-            insert_all_on_not_matched=False,
-        )
-        assert spec.insert_all_on_not_matched is False
-
+from transport_etl.publish.delta_writer import resolve_delta_write_mode
 
 # ---------------------------------------------------------------------------
 # resolve_delta_write_mode — pure logic
@@ -201,23 +47,10 @@ class TestResolveDeltaWriteMode:
 
 
 class TestWriteDeltaTableImportGuard:
-    def test_raises_import_error_without_pyspark(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """write_delta_table must raise ImportError when PySpark is absent."""
-        import sys
-
-        # Remove pyspark from sys.modules to simulate absence.
-        pyspark_modules = {k: v for k, v in sys.modules.items() if k.startswith("pyspark")}
-        for mod in pyspark_modules:
-            monkeypatch.delitem(sys.modules, mod, raising=False)
-
-        # Force the delta_writer module to re-check availability.
-        import importlib
-
+    def test_rejects_non_dataframe_input_when_pyspark_is_installed(self) -> None:
         import transport_etl.publish.delta_writer as dw
 
-        importlib.reload(dw)
-
-        with pytest.raises(ImportError, match="requires PySpark"):
+        with pytest.raises(TypeError, match="Spark DataFrame"):
             dw.write_delta_table(
                 df=None,  # type: ignore[arg-type]
                 table_name="supply_chain.gold.fct_shipment",

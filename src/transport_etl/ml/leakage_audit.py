@@ -54,9 +54,8 @@ The feature matrix is allowed to use:
 - ``distance_miles`` (known at booking)
 - ``shipping_cost_usd`` (known at booking)
 - ``carrier_historical_late_rate`` (computed only from shipments
-  whose ``pickup_ts`` is strictly before the current row's
-  ``pickup_ts``)
-- ``route_historical_late_rate`` (same chronological rule)
+  whose pickup and observed outcome precede the current pickup)
+- ``route_historical_late_rate`` (same as-of rule)
 - ``carrier_historical_shipment_count`` (same)
 - ``route_historical_shipment_count`` (same)
 

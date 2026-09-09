@@ -103,23 +103,19 @@ Source table: `curated.kpi_delivery_daily`
 | `volume_by_carrier` | `total_shipments` | Daily shipment throughput per carrier |
 | `delivery_event_density` | `total_delivery_events / total_shipments` | Operational touch intensity per shipment |
 
-### Denominator Convention
-`delivered_denominator = GREATEST(delivered_shipments, delivered_event_shipments)`
+### Denominator and Date Convention
 
-This avoids undercounting when delivery events and shipment facts arrive on slightly different schedules.
+`delivered_denominator = delivered_shipments`
+
+Shipment and delivery-event metrics use the shipment pickup-date cohort for
+`p_date`. Event timestamps remain available for event-time analysis, but KPI
+numerators and denominators are not joined across unrelated calendar dates.
 
 ## Metric Behavior and Edge Cases
 - All rates default to `0.0` when denominator is `0`.
 - `avg_cost_per_mile` defaults to `0.0` when distance is zero/null.
 - `avg_transit_hours` defaults to `0.0` when no transit durations are available.
 - `delay_minutes` is clamped to non-negative values before KPI rollups.
-
-## Suggested Alert Thresholds (Portfolio Example)
-- `on_time_delivery_rate < 0.90` for 3 consecutive days
-- `late_delivery_rate > 0.10` day-over-day spike > 30%
-- `first_attempt_success_rate < 0.85` for parcel carriers
-- `exception_rate > 0.08` sustained for 7 days
-- `avg_cost_per_mile` weekly increase > 15%
 
 ## SQL Consumption Example
 ```sql
