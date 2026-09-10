@@ -241,13 +241,13 @@ when the CLI is invoked.  The threshold table is included in
 
 ## Failure Cases (observed)
 
-- **The two models disagree by ~10 percentage points on
-  ROC-AUC.**  This is the noise floor of the synthetic data;
+- **The two models disagree by about 2.7 percentage points on
+  test ROC-AUC.**  This is the observed gap on the synthetic data;
   on a real dataset we would expect more separation between
   models and a higher absolute number.
 - **The GBT overfits heavily.**  With `max_iter=200` and
   `min_samples_leaf=20` it still produces train AUC 0.94 vs
-  test AUC 0.52.  This is the most important sign that the
+  test AUC 0.53.  This is the most important sign that the
   dataset's signal-to-noise ratio is low.
 - **Recall is 100% at the default threshold for LR.**  The model
   is *too* generous — every shipment ends up in HIGH or
@@ -255,7 +255,7 @@ when the CLI is invoked.  The threshold table is included in
   0 / 8 / 2,622 / 2,370 — no LOW and very few MEDIUM
   shipments.  Operators who use this output should pick a higher
   threshold or rely on the score probability rather than the band.
-- **The 5,000-shipment run has only 11 MEDIUM-band shipments.**
+- **The 5,000-shipment run has only 8 MEDIUM-band shipments.**
   This is a symptom of the overfitting, not a real phenomenon.
   A real distribution would have more variety.
 
