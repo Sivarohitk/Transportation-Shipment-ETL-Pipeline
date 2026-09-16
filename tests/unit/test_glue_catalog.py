@@ -6,6 +6,7 @@ import copy
 
 import pytest
 
+from transport_etl.common.aws_retry import RetryPolicy
 from transport_etl.publish.glue_catalog import (
     GLUE_TABLE_ORDER,
     GlueCatalogAdapter,
@@ -15,6 +16,13 @@ from transport_etl.publish.glue_catalog import (
     publish_curated_to_glue,
     spark_type_to_glue,
 )
+
+
+class _TransientGlueError(Exception):
+    response = {
+        "Error": {"Code": "ServiceUnavailableException"},
+        "ResponseMetadata": {"HTTPStatusCode": 503},
+    }
 
 
 class _Field:
@@ -105,6 +113,30 @@ class _FakeGlueClient:
     def update_partition(self, **kwargs):
         self.updated_partitions.append(copy.deepcopy(kwargs))
         return {}
+
+
+def test_create_table_reconciles_lost_response_without_duplicate_table() -> None:
+    class LostResponseClient(_FakeGlueClient):
+        calls = 0
+
+        def create_table(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                super().create_table(**kwargs)
+                raise _TransientGlueError("response lost")
+            raise _TransientGlueError("still unavailable")
+
+    client = LostResponseClient()
+    adapter = GlueCatalogAdapter(
+        GlueCatalogConfig(enabled=True, region="us-east-1", database="curated"),
+        client=client,
+        retry_policy=RetryPolicy(max_attempts=2, initial_delay=0, max_delay=0, jitter=0),
+        sleep=lambda _: None,
+    )
+    assert (
+        adapter.register_table("fct_shipment", "s3://bucket/gold", SCHEMA, PARTITIONS) == "created"
+    )
+    assert len(client.tables) == 1
 
 
 def _config(**changes):

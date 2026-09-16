@@ -13,12 +13,15 @@ import json
 import os
 import re
 import tempfile
+import time
 from contextlib import suppress
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 from urllib.parse import urlsplit
+
+from transport_etl.common.aws_retry import RetryPolicy, retry_aws_call
 
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -120,10 +123,19 @@ class LocalPipelineStateStore:
 class S3PipelineStateStore:
     """Persist each checkpoint as one checksummed S3 PUT, never multipart."""
 
-    def __init__(self, root: str, client: Any | None = None) -> None:
+    def __init__(
+        self,
+        root: str,
+        client: Any | None = None,
+        *,
+        retry_policy: RetryPolicy | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
         self.bucket, prefix = _s3_parts(root)
         self.prefix = prefix.rstrip("/")
         self.client = _s3_client(client)
+        self.retry_policy = retry_policy or RetryPolicy()
+        self.sleep = sleep
 
     def _key(self, batch_date: str) -> str:
         name = f"batches/{_date_token(batch_date)}.json"
@@ -132,7 +144,12 @@ class S3PipelineStateStore:
     def load(self, batch_date: str) -> dict[str, Any] | None:
         key = self._key(batch_date)
         try:
-            response = self.client.get_object(Bucket=self.bucket, Key=key)
+            response = retry_aws_call(
+                lambda: self.client.get_object(Bucket=self.bucket, Key=key),
+                operation="s3.get_object",
+                policy=self.retry_policy,
+                sleep=self.sleep,
+            )
         except Exception as exc:
             if _missing_object(exc):
                 return None
@@ -142,24 +159,33 @@ class S3PipelineStateStore:
     def save(self, batch_date: str, record: Mapping[str, Any]) -> None:
         encoded = json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
         checksum = base64.b64encode(hashlib.md5(encoded).digest()).decode("ascii")  # nosec B324
-        self.client.put_object(
-            Bucket=self.bucket,
-            Key=self._key(batch_date),
-            Body=encoded,
-            ContentType="application/json",
-            ContentMD5=checksum,
+        retry_aws_call(
+            lambda: self.client.put_object(
+                Bucket=self.bucket,
+                Key=self._key(batch_date),
+                Body=encoded,
+                ContentType="application/json",
+                ContentMD5=checksum,
+            ),
+            operation="s3.put_object",
+            policy=self.retry_policy,
+            sleep=self.sleep,
         )
 
 
 def create_state_store(
-    root: str, backend: str = "auto", *, s3_client: Any | None = None
+    root: str,
+    backend: str = "auto",
+    *,
+    s3_client: Any | None = None,
+    retry_policy: RetryPolicy | None = None,
 ) -> PipelineStateStore:
     """Select local or S3 persistence from explicit backend or root URI."""
     selected = backend.lower()
     if selected == "auto":
         selected = "s3" if root.startswith("s3://") else "local"
     if selected == "s3":
-        return S3PipelineStateStore(root, client=s3_client)
+        return S3PipelineStateStore(root, client=s3_client, retry_policy=retry_policy)
     if selected == "local" and not root.startswith(("s3://", "dbfs:/")):
         return LocalPipelineStateStore(root)
     raise ValueError(f"Invalid pipeline state backend/root: {backend!r}, {root!r}")
@@ -184,12 +210,22 @@ class SourceFile:
     modified_at: str | None
 
 
-def source_file_metadata(entity: str, path: str, *, s3_client: Any | None = None) -> SourceFile:
+def source_file_metadata(
+    entity: str,
+    path: str,
+    *,
+    s3_client: Any | None = None,
+    retry_policy: RetryPolicy | None = None,
+) -> SourceFile:
     """Fingerprint local content, or S3 object version/ETag and metadata."""
     if path.startswith("s3://"):
         bucket, key = _s3_parts(path)
         try:
-            metadata = _s3_client(s3_client).head_object(Bucket=bucket, Key=key)
+            metadata = retry_aws_call(
+                lambda: _s3_client(s3_client).head_object(Bucket=bucket, Key=key),
+                operation="s3.head_object",
+                policy=retry_policy,
+            )
         except Exception as exc:
             if _missing_object(exc):
                 raise FileNotFoundError(path) from exc

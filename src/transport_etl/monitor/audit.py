@@ -8,11 +8,14 @@ import json
 import os
 import re
 import tempfile
+import time
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol
 from urllib.parse import urlsplit
+
+from transport_etl.common.aws_retry import RetryPolicy, retry_aws_call
 
 _RUN_ID = re.compile(r"^[A-Za-z0-9_.-]{1,160}$")
 _SENSITIVE_KEY = re.compile(r"secret|password|token|credential|access.key|private.key", re.I)
@@ -140,7 +143,14 @@ class LocalJsonAuditStore:
 class S3AuditStore:
     """Write one checksummed S3 object per run with an injectable client."""
 
-    def __init__(self, root: str, client: Any | None = None) -> None:
+    def __init__(
+        self,
+        root: str,
+        client: Any | None = None,
+        *,
+        retry_policy: RetryPolicy | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
         parsed = urlsplit(root)
         if parsed.scheme != "s3" or not parsed.netloc or parsed.query or parsed.fragment:
             raise ValueError(f"Invalid S3 audit root: {root!r}")
@@ -153,17 +163,24 @@ class S3AuditStore:
                 raise ModuleNotFoundError("S3 audit requires pip install .[aws]") from exc
             client = boto3.client("s3")
         self.client = client
+        self.retry_policy = retry_policy or RetryPolicy()
+        self.sleep = sleep
 
     def write(self, record: Mapping[str, Any]) -> str:
         key = "/".join(filter(None, (self.prefix, f"{_run_id(record)}.json")))
         body = _encoded(record)
         checksum = base64.b64encode(hashlib.md5(body).digest()).decode("ascii")  # nosec B324
-        self.client.put_object(
-            Bucket=self.bucket,
-            Key=key,
-            Body=body,
-            ContentType="application/json",
-            ContentMD5=checksum,
+        retry_aws_call(
+            lambda: self.client.put_object(
+                Bucket=self.bucket,
+                Key=key,
+                Body=body,
+                ContentType="application/json",
+                ContentMD5=checksum,
+            ),
+            operation="s3.put_object",
+            policy=self.retry_policy,
+            sleep=self.sleep,
         )
         return f"s3://{self.bucket}/{key}"
 
@@ -193,7 +210,7 @@ def create_audit_store(
     if backend == "auto":
         backend = "s3" if root.startswith("s3://") else "local"
     if backend == "s3":
-        return S3AuditStore(root, client=client)
+        return S3AuditStore(root, client=client, retry_policy=RetryPolicy.from_config(config))
     if backend == "local" and "://" not in root and not root.startswith("dbfs:/"):
         return LocalJsonAuditStore(root)
     raise ValueError(f"Invalid audit backend/path: {backend!r}, {root!r}")

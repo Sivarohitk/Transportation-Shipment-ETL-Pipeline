@@ -276,6 +276,17 @@ streaming, or row-level change detection. S3 fingerprints use object metadata
 The base/Databricks profile leaves this checkpoint path disabled so existing
 Databricks Delta behavior is unchanged.
 
+### Bounded AWS retries
+
+Transient Glue, Redshift Data API, CloudWatch, and S3 state/audit requests use
+`aws_retry` settings from `config/base.yaml` (three total attempts by default,
+exponential backoff, maximum delay, and jitter). Credential, authorization,
+validation, SQL, Spark, and data-quality failures are not blanket-retried.
+Redshift submission retries reuse a Data API idempotency token, while S3
+checkpoint retries overwrite the same key with the same bytes. CloudWatch
+remains best-effort and is not an exactly-once metric ledger. See the
+[reliability boundaries](docs/architecture.md#bounded-aws-adapter-retries).
+
 ### Pipeline audit and optional CloudWatch metrics
 
 The dev and EMR production profiles write one JSON audit record per daily run

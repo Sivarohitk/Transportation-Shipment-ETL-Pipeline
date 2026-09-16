@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import re
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence
 from urllib.parse import urlsplit
 
+from transport_etl.common.aws_retry import RetryPolicy, retry_aws_call
 from transport_etl.common.constants import (
     TABLE_AGG_SHIPMENT_DAILY,
     TABLE_DIM_CARRIER,
@@ -251,11 +253,24 @@ class RedshiftDataApi:
         client: RedshiftDataApiClient | None = None,
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
+        retry_policy: RetryPolicy | None = None,
+        logger: Any | None = None,
     ) -> None:
         self.config = config
         self._sleep = sleep
         self._monotonic = monotonic
+        self.retry_policy = retry_policy or RetryPolicy()
+        self.logger = logger
         self.client = client if client is not None else self._create_client()
+
+    def _call(self, operation: str, call: Callable[[], Mapping[str, Any]]) -> Mapping[str, Any]:
+        return retry_aws_call(
+            call,
+            operation=f"redshift-data.{operation}",
+            policy=self.retry_policy,
+            sleep=self._sleep,
+            logger=self.logger,
+        )
 
     def _create_client(self) -> RedshiftDataApiClient:
         try:
@@ -280,10 +295,14 @@ class RedshiftDataApi:
 
     def execute_sql(self, sql: str, statement_name: str | None = None) -> RedshiftStatementResult:
         """Execute one SQL statement and wait for its terminal state."""
-        request: dict[str, Any] = {"Sql": sql, **self._connection_args()}
+        request: dict[str, Any] = {
+            "Sql": sql,
+            "ClientToken": uuid.uuid4().hex,
+            **self._connection_args(),
+        }
         if statement_name:
             request["StatementName"] = statement_name
-        response = self.client.execute_statement(**request)
+        response = self._call("execute_statement", lambda: self.client.execute_statement(**request))
         return self.poll_statement(str(response["Id"]))
 
     def execute_transaction(
@@ -296,18 +315,23 @@ class RedshiftDataApi:
         request: dict[str, Any] = {
             "Sqls": statements,
             "ExecutionMode": "TRANSACTION",
+            "ClientToken": uuid.uuid4().hex,
             **self._connection_args(),
         }
         if statement_name:
             request["StatementName"] = statement_name
-        response = self.client.batch_execute_statement(**request)
+        response = self._call(
+            "batch_execute_statement", lambda: self.client.batch_execute_statement(**request)
+        )
         return self.poll_statement(str(response["Id"]))
 
     def poll_statement(self, statement_id: str) -> RedshiftStatementResult:
         """Poll a statement until success, failure, or configured timeout."""
         started = self._monotonic()
         while True:
-            detail = self.client.describe_statement(Id=statement_id)
+            detail = self._call(
+                "describe_statement", lambda: self.client.describe_statement(Id=statement_id)
+            )
             status = str(detail.get("Status", ""))
             if status == "FINISHED":
                 result_rows = detail.get("ResultRows")
@@ -464,6 +488,8 @@ def publish_curated_to_redshift(
         config=settings,
         sleep=sleep,
         monotonic=monotonic,
+        retry_policy=RetryPolicy.from_config(config),
+        logger=logger,
     )
 
     api.execute_transaction(

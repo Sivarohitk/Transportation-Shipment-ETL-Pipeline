@@ -7,6 +7,13 @@ runtime:
   default_write_mode: overwrite
   fail_fast: true
 
+# Explicit adapter-level retries for transient AWS/network errors only.
+aws_retry:
+  max_attempts: 3
+  initial_delay_seconds: 0.25
+  max_delay_seconds: 2.0
+  jitter: 0.2
+
 # File-manifest checkpoints. Disabled in the shared base so existing custom
 # and Databricks profiles retain their current behavior unless opted in.
 pipeline_state:

@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import copy
 import re
+import time
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping, Protocol, Sequence
+from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 from urllib.parse import urlsplit
 
+from transport_etl.common.aws_retry import RetryPolicy, classify_aws_error, retry_aws_call
 from transport_etl.common.constants import (
     TABLE_AGG_SHIPMENT_DAILY,
     TABLE_DIM_CARRIER,
@@ -86,6 +88,12 @@ def _is_not_found(exc: Exception) -> bool:
         return False
     detail = response.get("Error")
     return isinstance(detail, Mapping) and detail.get("Code") == "EntityNotFoundException"
+
+
+def _is_already_exists(exc: Exception) -> bool:
+    response = getattr(exc, "response", None)
+    detail = response.get("Error") if isinstance(response, Mapping) else None
+    return isinstance(detail, Mapping) and detail.get("Code") == "AlreadyExistsException"
 
 
 @dataclass(frozen=True)
@@ -213,8 +221,19 @@ class GlueRegistrationResult:
 class GlueCatalogAdapter:
     """Thin Glue API adapter with an injectable boto3-compatible client."""
 
-    def __init__(self, config: GlueCatalogConfig, client: GlueClient | None = None) -> None:
+    def __init__(
+        self,
+        config: GlueCatalogConfig,
+        client: GlueClient | None = None,
+        *,
+        retry_policy: RetryPolicy | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+        logger: Any | None = None,
+    ) -> None:
         self.config = config
+        self.retry_policy = retry_policy or RetryPolicy()
+        self.sleep = sleep
+        self.logger = logger
         if client is None:
             try:
                 import boto3
@@ -225,13 +244,25 @@ class GlueCatalogAdapter:
             client = boto3.client("glue", region_name=config.region)
         self.client = client
 
+    def _call(self, operation: str, call: Callable[[], Any]) -> Any:
+        return retry_aws_call(
+            call,
+            operation=f"glue.{operation}",
+            policy=self.retry_policy,
+            sleep=self.sleep,
+            logger=self.logger,
+        )
+
     def _scope(self) -> dict[str, str]:
         return {"CatalogId": self.config.catalog_id} if self.config.catalog_id else {}
 
     def get_database(self) -> Mapping[str, Any] | None:
         """Fetch the configured database; return ``None`` only when missing."""
         try:
-            return self.client.get_database(Name=self.config.database, **self._scope())["Database"]
+            return self._call(
+                "get_database",
+                lambda: self.client.get_database(Name=self.config.database, **self._scope()),
+            )["Database"]
         except Exception as exc:
             if _is_not_found(exc):
                 return None
@@ -241,15 +272,30 @@ class GlueCatalogAdapter:
         """Create the metadata database if it does not already exist."""
         if self.get_database() is not None:
             return "existing"
-        self.client.create_database(DatabaseInput={"Name": self.config.database}, **self._scope())
+        try:
+            self._call(
+                "create_database",
+                lambda: self.client.create_database(
+                    DatabaseInput={"Name": self.config.database}, **self._scope()
+                ),
+            )
+        except Exception as exc:
+            # A timed-out create may have committed; confirm before failing.
+            if classify_aws_error(exc) == "permanent" and not _is_already_exists(exc):
+                raise exc
+            if self.get_database() is None:
+                raise exc
         return "created"
 
     def get_table(self, table_name: str) -> Mapping[str, Any] | None:
         """Fetch one Glue table; return ``None`` only when missing."""
         _name(table_name, "table name")
         try:
-            return self.client.get_table(
-                DatabaseName=self.config.database, Name=table_name, **self._scope()
+            return self._call(
+                "get_table",
+                lambda: self.client.get_table(
+                    DatabaseName=self.config.database, Name=table_name, **self._scope()
+                ),
             )["Table"]
         except Exception as exc:
             if _is_not_found(exc):
@@ -264,7 +310,19 @@ class GlueCatalogAdapter:
         current = self.get_table(table_name)
         args = {"DatabaseName": self.config.database, "TableInput": desired, **self._scope()}
         if current is None:
-            self.client.create_table(**args)
+            try:
+                self._call("create_table", lambda: self.client.create_table(**args))
+            except Exception as exc:
+                # Reconcile a create whose response was lost after commit.
+                if classify_aws_error(exc) == "permanent" and not _is_already_exists(exc):
+                    raise exc
+                recovered = self.get_table(table_name)
+                if recovered is None:
+                    raise exc
+                if not _compatible(recovered, desired):
+                    raise GlueCatalogError(
+                        f"Existing Glue table {table_name} has incompatible metadata"
+                    ) from exc
             return "created"
         if not _compatible(current, desired):
             raise GlueCatalogError(f"Existing Glue table {table_name} has incompatible metadata")
@@ -283,7 +341,7 @@ class GlueCatalogAdapter:
             **dict(current.get("Parameters", {})),
             **desired["Parameters"],
         }
-        self.client.update_table(**args)
+        self._call("update_table", lambda: self.client.update_table(**args))
         return "updated"
 
     def register_partitions(
@@ -313,11 +371,14 @@ class GlueCatalogAdapter:
         total = 0
         for start in range(0, len(entries), 100):
             chunk = entries[start : start + 100]
-            response = self.client.batch_create_partition(
-                DatabaseName=self.config.database,
-                TableName=table_name,
-                PartitionInputList=chunk,
-                **self._scope(),
+            response = self._call(
+                "batch_create_partition",
+                lambda: self.client.batch_create_partition(
+                    DatabaseName=self.config.database,
+                    TableName=table_name,
+                    PartitionInputList=chunk,
+                    **self._scope(),
+                ),
             )
             by_values = {tuple(entry["Values"]): entry for entry in chunk}
             for error in response.get("Errors", []):
@@ -326,12 +387,15 @@ class GlueCatalogAdapter:
                 partition = by_values.get(tuple(error.get("PartitionValues", [])))
                 if code != "AlreadyExistsException" or partition is None:
                     raise GlueCatalogError(f"Glue partition registration failed: {error}")
-                self.client.update_partition(
-                    DatabaseName=self.config.database,
-                    TableName=table_name,
-                    PartitionValueList=partition["Values"],
-                    PartitionInput=partition,
-                    **self._scope(),
+                self._call(
+                    "update_partition",
+                    lambda: self.client.update_partition(
+                        DatabaseName=self.config.database,
+                        TableName=table_name,
+                        PartitionValueList=partition["Values"],
+                        PartitionInput=partition,
+                        **self._scope(),
+                    ),
                 )
             total += len(chunk)
         return total
@@ -352,7 +416,12 @@ def publish_curated_to_glue(
         return []
 
     try:
-        adapter = GlueCatalogAdapter(settings, client=client)
+        adapter = GlueCatalogAdapter(
+            settings,
+            client=client,
+            retry_policy=RetryPolicy.from_config(config),
+            logger=logger,
+        )
         adapter.ensure_database()
     except Exception as exc:
         if settings.failure_policy == "fail":

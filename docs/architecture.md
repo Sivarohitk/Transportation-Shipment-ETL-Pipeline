@@ -164,6 +164,29 @@ events, or implement CDC. Source modification times and object metadata help
 detect replacement files, not a row-level history. The base and Databricks
 profiles leave this checkpoint disabled to preserve their existing behavior.
 
+## Bounded AWS adapter retries
+
+`aws_retry` in `config/base.yaml` sets the total attempts, initial delay,
+exponential-backoff ceiling, and fractional jitter. The small shared helper
+classifies recognized throttling, service-unavailable, and network failures;
+authorization, credential, validation, and other unknown errors fail without
+retry. Every retry log carries operation, attempt, maximum attempts, reason
+category, and next delay, but never the exception text or request credentials.
+Sleep and randomness can be injected in tests.
+
+Retries live only in the Glue, Redshift Data API, CloudWatch, and S3
+state/audit adapters. Spark transformations, schema checks, and quality rules
+are not retried. Redshift submissions reuse one Data API `ClientToken` across
+attempts and poll an existing statement ID rather than resubmitting SQL after
+an execution-status error. S3 state and audit PUTs retry the same bytes to the
+same object key; the final state checkpoint remains one per batch date. Glue
+table/database creation reconciles an uncertain response by reading the
+object before reporting success or failure. CloudWatch metrics are best-effort
+and may be delivered more than once if an ambiguous response is retried;
+consumers must not treat them as an exactly-once ledger. The audit and state
+records remain the durable control-plane source of truth. AWS outage behavior
+has fake-client test coverage but has not been validated against live AWS.
+
 ## Pipeline audit and CloudWatch metrics
 
 The old `monitor.audit.build_audit_record` returned only an in-memory

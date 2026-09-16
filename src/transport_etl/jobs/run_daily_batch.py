@@ -11,6 +11,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Mapping
 
+from transport_etl.common.aws_retry import RetryPolicy
 from transport_etl.common.catalog import is_databricks, resolve_table_name
 from transport_etl.common.config import load_config
 from transport_etl.common.constants import (
@@ -177,7 +178,11 @@ def _resolve_region_lookup_path(reference_base_path: str) -> str:
 
 
 def _resolve_source_manifest(
-    raw_base_path: str, reference_base_path: str, batch_date: str, s3_client: Any | None
+    raw_base_path: str,
+    reference_base_path: str,
+    batch_date: str,
+    s3_client: Any | None,
+    retry_policy: RetryPolicy | None = None,
 ) -> list[SourceFile]:
     """Resolve dated-then-undated inputs and fingerprint the exact files read."""
     manifest: list[SourceFile] = []
@@ -188,14 +193,22 @@ def _resolve_source_manifest(
         )
         for candidate in candidates:
             try:
-                manifest.append(source_file_metadata(entity, candidate, s3_client=s3_client))
+                manifest.append(
+                    source_file_metadata(
+                        entity, candidate, s3_client=s3_client, retry_policy=retry_policy
+                    )
+                )
                 break
             except FileNotFoundError:
                 continue
         else:
             raise FileNotFoundError(f"Raw source not found for entity={entity!r} date={batch_date}")
     reference = _join_storage_path(reference_base_path, "region_lookup.csv")
-    manifest.append(source_file_metadata("region_lookup", reference, s3_client=s3_client))
+    manifest.append(
+        source_file_metadata(
+            "region_lookup", reference, s3_client=s3_client, retry_policy=retry_policy
+        )
+    )
     return manifest
 
 
@@ -1103,6 +1116,7 @@ def run_daily_batch(
             raise ValueError("pipeline_state configuration must be a mapping")
 
         manifest: list[SourceFile] = []
+        retry_policy = RetryPolicy.from_config(config)
         metadata_client = source_client
         if bool(state_config.get("enabled", False)):
             root = str(state_config.get("root_path", "")).strip() or _join_storage_path(
@@ -1113,10 +1127,13 @@ def run_daily_batch(
                 [raw_base_path, reference_base, root], source_client
             )
             store = state_store or create_state_store(
-                root, str(state_config.get("backend", "auto")), s3_client=metadata_client
+                root,
+                str(state_config.get("backend", "auto")),
+                s3_client=metadata_client,
+                retry_policy=retry_policy,
             )
             manifest = _resolve_source_manifest(
-                raw_base_path, reference_base, batch_date, metadata_client
+                raw_base_path, reference_base, batch_date, metadata_client, retry_policy
             )
 
         success_audit_record: dict[str, Any] | None = None
@@ -1139,7 +1156,12 @@ def run_daily_batch(
                 )
                 if manifest:
                     current = [
-                        source_file_metadata(source.entity, source.path, s3_client=metadata_client)
+                        source_file_metadata(
+                            source.entity,
+                            source.path,
+                            s3_client=metadata_client,
+                            retry_policy=retry_policy,
+                        )
                         for source in manifest
                     ]
                     if current != manifest:

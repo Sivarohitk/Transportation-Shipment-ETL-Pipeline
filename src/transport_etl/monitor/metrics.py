@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping, Protocol
+import time
+from typing import Any, Callable, Mapping, Protocol
+
+from transport_etl.common.aws_retry import RetryPolicy, retry_aws_call
 
 
 class MetricsSink(Protocol):
@@ -70,10 +73,20 @@ class NoOpMetricsSink:
 class CloudWatchMetricsSink:
     """Put audit-derived metrics through an injectable boto3 CloudWatch client."""
 
-    def __init__(self, namespace: str, region: str, *, client: Any | None = None) -> None:
+    def __init__(
+        self,
+        namespace: str,
+        region: str,
+        *,
+        client: Any | None = None,
+        retry_policy: RetryPolicy | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
         if not namespace.strip() or not region.strip():
             raise ValueError("CloudWatch namespace and region are required")
         self.namespace = namespace
+        self.retry_policy = retry_policy or RetryPolicy()
+        self.sleep = sleep
         if client is None:
             try:
                 import boto3
@@ -86,7 +99,12 @@ class CloudWatchMetricsSink:
         """Publish one small batch, omitting skipped runs."""
         data = build_metric_data(record)
         if data:
-            self.client.put_metric_data(Namespace=self.namespace, MetricData=data)
+            retry_aws_call(
+                lambda: self.client.put_metric_data(Namespace=self.namespace, MetricData=data),
+                operation="cloudwatch.put_metric_data",
+                policy=self.retry_policy,
+                sleep=self.sleep,
+            )
 
 
 def create_metrics_sink(config: Mapping[str, Any], *, client: Any | None = None) -> MetricsSink:
@@ -97,5 +115,8 @@ def create_metrics_sink(config: Mapping[str, Any], *, client: Any | None = None)
     if not bool(settings.get("enabled", False)):
         return NoOpMetricsSink()
     return CloudWatchMetricsSink(
-        str(settings.get("namespace", "")), str(settings.get("region", "")), client=client
+        str(settings.get("namespace", "")),
+        str(settings.get("region", "")),
+        client=client,
+        retry_policy=RetryPolicy.from_config(config),
     )
