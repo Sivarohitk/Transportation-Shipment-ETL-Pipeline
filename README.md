@@ -5,6 +5,8 @@ into trustworthy operational facts, delivery KPIs, carrier/route analytics,
 and late-shipment risk scores. The same Python package supports local PySpark,
 Amazon EMR-oriented batch deployment, and a live-validated Databricks
 serverless implementation without replacing the local or EMR paths.
+Amazon Redshift is an optional downstream publication target for selected
+S3-backed Gold tables; it is not a fourth Spark execution environment.
 
 All included sample and live-validation data is **synthetic**. This repository
 does not represent production operations, certified business improvement, or
@@ -31,6 +33,8 @@ route, region, and exception analysis.
 | --- | --- |
 | Local daily and backfill pipeline | Implemented and exercised with synthetic samples |
 | EMR runtime | PySpark/S3/Hive-compatible configuration and deployment artifacts implemented; no live EMR cluster validation is claimed |
+| AWS Glue Data Catalog | Optional boto3-backed database, table, and partition registration implemented with fake-client tests; no live AWS validation is claimed |
+| Amazon Redshift publication | Optional Data API, Parquet COPY, staging, transactional MERGE, and audit path implemented with fake-client tests; no live AWS validation is claimed |
 | Databricks development target | Bundle validated, deployed, and run successfully on Free Edition serverless |
 | Databricks tables | Three Bronze, three Silver, and eight Gold managed Delta tables live-validated |
 | Silver MERGE and rerun behavior | First-load bootstrap, existing-target MERGE, deterministic update, and business-key uniqueness live-validated |
@@ -58,7 +62,10 @@ flowchart TB
     end
 
     subgraph EMR["Amazon EMR-oriented runtime"]
-        E1["Bronze/Silver/Gold<br/>partitioned S3 Parquet"] --> E2["Hive/Glue-compatible registration<br/>spark-submit on YARN"]
+        E1["Bronze/Silver/Gold<br/>partitioned S3 Parquet"] --> E2["Spark Hive registration<br/>spark-submit on YARN"]
+        E1 -. "glue.enabled=true" .-> GC["AWS Glue Data Catalog<br/>five core Gold tables + partitions"]
+        E1 -. "when Redshift is enabled" .-> E3["Unpartitioned Redshift-ready Parquet<br/>partition values retained as columns"]
+        E3 --> E4["Redshift Data API<br/>COPY → staging → MERGE → audit"]
     end
 
     subgraph DBX["Databricks serverless — live validated"]
@@ -79,7 +86,8 @@ The diagram deliberately does not imply identical execution paths. The ML
 wheel task currently consumes a configured CSV and writes file-based scoring
 artifacts; integrating it directly with the Gold shipment table is not
 implemented. Power BI is a documented manual build target, not a finished
-report.
+report. Redshift publication is disabled by default and does not change local
+or ordinary EMR publication when it is not enabled.
 
 For layer mechanics and runtime boundaries, see
 [Architecture](docs/architecture.md).
@@ -240,13 +248,78 @@ can fall back to JSON for the affected invalid-record and curated writes.
 ### Amazon EMR
 
 The production profile selects `spark.profile: emr`, S3 paths, Parquet,
-Hive/Glue-compatible registration, dynamic allocation, and fail-fast behavior.
+Spark Hive registration, dynamic allocation, and fail-fast behavior.
 Scripts and step templates under `deploy/emr` package/upload the project and
 submit daily or backfill work with `spark-submit` on YARN.
 
 All bucket, IAM role, release, and cluster values are placeholders that an
 operator must supply. A live EMR run has not been claimed. Follow
 [EMR run instructions](docs/emr_run_instructions.md).
+
+### Optional AWS Glue Data Catalog registration
+
+`glue.enabled` is `false` by default, independently of the existing
+`hive.register_tables` switch. After the five core Gold Parquet datasets have
+been written to S3, an enabled Glue adapter uses boto3 to get or create the
+configured database and register `dim_carrier`, `fct_shipment`,
+`fct_delivery_event`, `agg_shipment_daily`, and `kpi_delivery_daily` as
+external Parquet tables. Each table's Spark data columns, S3 location, and
+`p_date`/`region_code`/`carrier_id` partition keys are explicit. Compatible
+appended columns or S3 location changes can update existing table metadata;
+incompatible schema or partition-key changes fail validation. When
+`glue.register_partitions=true`, the publisher registers the partitions in
+the successful Gold batch and refreshes existing partition locations on a
+rerun. This is Glue Data Catalog API integration, not a Glue crawler or Glue
+ETL job, and it does not replace Spark Hive registration.
+
+Configure `glue.region`, `glue.database`, and optionally `glue.catalog_id`
+through deployment configuration or environment variables. Install the
+optional `aws` dependency group for a real AWS run. Set
+`glue.failure_policy: fail` to stop the daily job on Glue errors, or `warn`
+to log the error and continue; `fail` is the default. Local tests use an
+injected fake Glue client, so they require neither boto3 nor AWS credentials.
+No live Glue catalog registration is claimed: IAM permissions, S3 visibility,
+table/partition discovery, compatible updates, and rerun behavior still need
+validation in an AWS account.
+
+### Optional Amazon Redshift publication
+
+The daily batch can additionally publish five core Gold models to Amazon
+Redshift when `redshift.enabled` is explicitly set to `true`:
+`dim_carrier`, `fct_shipment`, `fct_delivery_event`,
+`agg_shipment_daily`, and `kpi_delivery_daily`. The base and development
+configuration keep this feature disabled, so local setup, tests, and daily
+runs do not need AWS credentials or `boto3`.
+
+When enabled, the Spark job writes a dedicated unpartitioned, Redshift-ready
+Parquet export beneath the configured Redshift S3 source path. This export is
+deliberate: the canonical local/EMR datasets remain partitioned by `p_date`,
+`region_code`, and `carrier_id`, and Spark stores those values in directory
+names rather than in each Parquet file. Redshift Parquet `COPY` requires the
+file and target-table columns to align, so the dedicated export retains all
+three partition values as ordinary file columns without changing the
+canonical Gold layout.
+
+The publisher uses the Redshift Data API with either a configured Serverless
+workgroup or provisioned-cluster identifier. For each table it loads the
+export into a staging table with `COPY ... FORMAT AS PARQUET` and IAM-role
+authorization, then transactionally MERGEs by the documented business key and
+records an ETL audit row. Polling reports terminal Data API failures and
+timeouts, and the orchestration result records the table, source path,
+statement ID, row count when supplied by AWS, duration, and status. Database,
+schema, S3, IAM-role, secret, workgroup, and cluster values come from
+configuration or environment variables; no AWS resource identifiers or
+credentials are committed.
+
+Unit and integration-style tests use injected fake Data API clients to cover
+configuration, identifier safety, COPY rendering, polling success/failure,
+timeouts, disabled behavior, load order, and rerunnable MERGE orchestration.
+Those tests prove local control flow and generated SQL, not AWS permissions,
+networking, Parquet compatibility in a deployed environment, or warehouse
+performance. A live Redshift workgroup/cluster, database secret or IAM
+authentication, S3 access role, same-Region bucket, schema bootstrap, initial
+load, rerun, row reconciliation, and failure recovery still require manual AWS
+validation.
 
 ### Databricks
 
@@ -337,6 +410,8 @@ python -m pytest -q tests/databricks
 GitHub Actions installs the editable package, smoke-tests CLI entry points,
 runs pytest, and checks Ruff and Black on Python 3.10. Live Databricks behavior
 is not faked by the local suite; workspace evidence is documented separately.
+Redshift tests intentionally use fake clients and make no claim of live AWS
+execution.
 
 ## Skills Demonstrated
 
@@ -344,6 +419,8 @@ is not faked by the local suite; workspace evidence is documented separately.
 - Bronze/Silver/Gold lakehouse modeling with explicit grain and lineage.
 - Schema contracts, quarantine, deterministic deduplication, and quality gates.
 - Partitioned Parquet/Hive publication for local and EMR-oriented runtimes.
+- Optional Redshift Data API publication with Parquet COPY, staging, keyed
+  MERGE, and auditable load results.
 - Delta Lake managed tables, keyed MERGE, and Unity Catalog naming.
 - Databricks serverless Lakeflow Jobs and Declarative Automation Bundles.
 - Carrier, route, exception, transit, delivery, and cost KPI modeling.
@@ -389,6 +466,9 @@ is not faked by the local suite; workspace evidence is documented separately.
 - The production Databricks target, active schedule, and a second workspace
   have not been validated.
 - EMR artifacts are implemented but have not been exercised on a live cluster.
+- Redshift publication is locally tested with fake clients but has not been
+  run against live AWS resources; IAM, S3, network, schema, load, rerun, and
+  reconciliation behavior remain to be validated there.
 - The ML scorer reads a configured CSV rather than the Gold shipment table and
   writes file-based artifacts rather than a managed scoring table.
 - The data-quality Lakeflow task does not yet reconcile every newly written
@@ -407,7 +487,7 @@ is not faked by the local suite; workspace evidence is documented separately.
 
 - `src/transport_etl` — application, quality, publishing, and ML modules.
 - `config` — environment YAML, Spark profiles, and JSON schemas.
-- `sql` — staging, quality, curated, Gold, and KPI SQL definitions.
+- `sql` — staging, quality, curated, Gold, KPI, and Redshift SQL definitions.
 - `data/sample` — synthetic raw and reference inputs.
 - `tests` — unit, integration, SQL, data-quality, ML, and bundle tests.
 - `deploy/emr` — EMR configuration, packaging, bootstrap, and step templates.

@@ -15,6 +15,48 @@ def test_load_config_merges_base_and_dev_values() -> None:
     assert cfg["runtime"]["default_write_mode"] == "overwrite"
     assert cfg["paths"]["raw_base_path"] == "data/sample/raw"
     assert cfg["spark"]["profile"] == "local"
+    assert cfg["redshift"]["enabled"] is False
+    assert cfg["glue"]["enabled"] is False
+    assert cfg["glue"]["failure_policy"] == "fail"
+
+
+def test_load_prod_config_expands_redshift_placeholders(monkeypatch) -> None:
+    """Production Redshift values should come from environment variables."""
+    values = {
+        "REGION": "us-east-1",
+        "DATABASE": "analytics",
+        "WORKGROUP_NAME": "transport-workgroup",
+        "CLUSTER_IDENTIFIER": "",
+        "SECRET_ARN": "",
+        "DATABASE_USER": "",
+        "IAM_ROLE_ARN": "arn:aws:iam::123456789012:role/redshift-copy",
+        "SOURCE_S3_PATH": "s3://transport-bucket/redshift-ready",
+        "STAGING_SCHEMA": "transport_staging",
+        "TARGET_SCHEMA": "transport_analytics",
+        "AUDIT_SCHEMA": "transport_audit",
+    }
+    for suffix, value in values.items():
+        monkeypatch.setenv(f"TRANSPORT_ETL_REDSHIFT_{suffix}", value)
+
+    cfg = load_config("prod")
+
+    assert cfg["redshift"]["enabled"] is False
+    assert cfg["redshift"]["region"] == "us-east-1"
+    assert cfg["redshift"]["source_s3_path"] == "s3://transport-bucket/redshift-ready"
+
+
+def test_load_prod_config_expands_glue_placeholders(monkeypatch) -> None:
+    """The opt-in Glue catalog target should read deployment values from env."""
+    monkeypatch.setenv("TRANSPORT_ETL_GLUE_REGION", "us-east-1")
+    monkeypatch.setenv("TRANSPORT_ETL_GLUE_DATABASE", "transport_curated")
+    monkeypatch.setenv("TRANSPORT_ETL_GLUE_CATALOG_ID", "")
+
+    cfg = load_config("prod")
+
+    assert cfg["glue"]["enabled"] is False
+    assert cfg["glue"]["region"] == "us-east-1"
+    assert cfg["glue"]["database"] == "transport_curated"
+    assert cfg["glue"]["catalog_id"] == ""
 
 
 def test_resolve_config_path_handles_short_name() -> None:

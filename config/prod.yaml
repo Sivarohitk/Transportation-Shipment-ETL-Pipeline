@@ -20,6 +20,34 @@ paths:
   audit_base_path: s3://your-bucket/transport/logs
   reference_base_path: s3://your-bucket/transport/reference
 
+# Redshift remains opt-in. Set enabled to true only in a deployment-specific
+# override after provisioning the referenced AWS resources.
+redshift:
+  enabled: false
+  region: ${TRANSPORT_ETL_REDSHIFT_REGION}
+  database: ${TRANSPORT_ETL_REDSHIFT_DATABASE}
+  workgroup_name: ${TRANSPORT_ETL_REDSHIFT_WORKGROUP_NAME}
+  cluster_identifier: ${TRANSPORT_ETL_REDSHIFT_CLUSTER_IDENTIFIER}
+  secret_arn: ${TRANSPORT_ETL_REDSHIFT_SECRET_ARN}
+  database_user: ${TRANSPORT_ETL_REDSHIFT_DATABASE_USER}
+  iam_role_arn: ${TRANSPORT_ETL_REDSHIFT_IAM_ROLE_ARN}
+  source_s3_path: ${TRANSPORT_ETL_REDSHIFT_SOURCE_S3_PATH}
+  staging_schema: ${TRANSPORT_ETL_REDSHIFT_STAGING_SCHEMA}
+  target_schema: ${TRANSPORT_ETL_REDSHIFT_TARGET_SCHEMA}
+  audit_schema: ${TRANSPORT_ETL_REDSHIFT_AUDIT_SCHEMA}
+  poll_interval_seconds: 2
+  timeout_seconds: 900
+
+# Explicitly opt in only after configuring a Glue database and IAM access.
+glue:
+  enabled: false
+  region: ${TRANSPORT_ETL_GLUE_REGION}
+  database: ${TRANSPORT_ETL_GLUE_DATABASE}
+  catalog_id: ${TRANSPORT_ETL_GLUE_CATALOG_ID}
+  update_existing_tables: true
+  register_partitions: true
+  failure_policy: fail
+
 logging:
   level: INFO
   json: true

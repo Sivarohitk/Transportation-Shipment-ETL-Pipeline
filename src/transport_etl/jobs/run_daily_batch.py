@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import re
 import uuid
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -26,7 +27,7 @@ from transport_etl.common.io import is_cloud_path, path_exists
 from transport_etl.common.logging import configure_logging, get_logger
 from transport_etl.common.spark import create_spark_session_from_config, stop_spark_session
 from transport_etl.publish.hive_writer import write_partitioned_table
-from transport_etl.publish.partitions import required_partition_columns
+from transport_etl.publish.partitions import ensure_partition_columns, required_partition_columns
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _DATED_CSV_PATTERN = re.compile(r"_(\d{4}-\d{2}-\d{2})\.csv$")
@@ -265,11 +266,93 @@ def _run_staging_sql(
     return staged_df
 
 
+def _publish_redshift_if_enabled(
+    *,
+    config: Mapping[str, Any],
+    dataframes: Mapping[str, Any],
+    batch_date: str,
+    logger: Any,
+    client: Any | None = None,
+    sql_dir: str | Path | None = None,
+) -> list[dict[str, Any]]:
+    """Publish core Gold tables to Redshift only when explicitly enabled."""
+    from transport_etl.publish.redshift import publish_curated_to_redshift
+
+    results = publish_curated_to_redshift(
+        config,
+        dataframes=dataframes,
+        batch_id=f"daily_{batch_date}",
+        client=client,
+        sql_dir=sql_dir,
+        logger=logger,
+    )
+    return [asdict(result) for result in results]
+
+
+def _iter_glue_partition_values(dataframe: Any, keys: list[str]) -> Any:
+    """Yield the distinct partition tuples written by Spark for one Gold table."""
+    prepared = ensure_partition_columns(dataframe, keys)
+    for row in prepared.select(*keys).distinct().toLocalIterator():
+        yield tuple(str(row[key]) for key in keys)
+
+
+def _write_gold_and_register_glue(
+    *,
+    table_writes: list[tuple[str, Any]],
+    config: Mapping[str, Any],
+    curated_base_path: str,
+    writer_kwargs: Mapping[str, Any],
+    logger: Any,
+    glue_client: Any | None = None,
+) -> tuple[dict[str, str], list[dict[str, Any]]]:
+    """Write every Gold output before optional AWS Glue metadata registration."""
+    from transport_etl.publish.glue_catalog import (
+        GLUE_TABLE_ORDER,
+        GlueCatalogConfig,
+        publish_curated_to_glue,
+    )
+
+    outputs: dict[str, str] = {}
+    for table_name, dataframe in table_writes:
+        output_path = _join_storage_path(curated_base_path, table_name)
+        resolved_table, output_format = _resolve_gold_write_target(config, table_name)
+        outputs[table_name] = write_partitioned_table(
+            df=dataframe,
+            table_name=resolved_table,
+            output_path=output_path,
+            output_format=output_format,
+            **writer_kwargs,
+        )
+
+    settings = GlueCatalogConfig.from_mapping(config)
+    if not settings.enabled:
+        return outputs, []
+
+    core_frames = {name: frame for name, frame in table_writes if name in GLUE_TABLE_ORDER}
+    keys = required_partition_columns()
+    partitions = (
+        {name: _iter_glue_partition_values(frame, keys) for name, frame in core_frames.items()}
+        if settings.register_partitions
+        else None
+    )
+    results = publish_curated_to_glue(
+        config,
+        locations={name: outputs[name] for name in GLUE_TABLE_ORDER},
+        schemas={name: frame.schema for name, frame in core_frames.items()},
+        partition_values=partitions,
+        client=glue_client,
+        logger=logger,
+    )
+    return outputs, [asdict(result) for result in results]
+
+
 def _execute_daily_flow(
     spark: Any,
     config: Mapping[str, Any],
     batch_date: str,
     logger: Any,
+    redshift_client: Any | None = None,
+    glue_client: Any | None = None,
 ) -> dict[str, Any]:
     """Execute end-to-end daily ETL flow."""
     from transport_etl.ingest.carriers import (
@@ -761,7 +844,6 @@ def _execute_daily_flow(
         _safe_count(delivery_exception_summary_df),
     )
 
-    outputs: dict[str, str] = {}
     table_writes = [
         (TABLE_DIM_CARRIER, dim_carrier_df),
         (TABLE_FCT_SHIPMENT, fct_shipment_df),
@@ -782,25 +864,38 @@ def _execute_daily_flow(
         ),
     ]
 
-    for table_name, dataframe in table_writes:
-        output_path = _join_storage_path(curated_base_path, table_name)
-        resolved_table, output_format = _resolve_gold_write_target(config, table_name)
-        written_path = write_partitioned_table(
-            df=dataframe,
-            table_name=resolved_table,
-            output_path=output_path,
-            partitions=partition_keys,
-            mode=write_mode,
-            spark=spark,
-            database=database,
-            register_hive_table=register_hive_tables,
-            repair_partitions=repair_partitions,
-            writer_options=parquet_options,
-            write_config=curated_write_config,
-            logger=logger,
-            output_format=output_format,
-        )
-        outputs[table_name] = written_path
+    outputs, glue_results = _write_gold_and_register_glue(
+        table_writes=table_writes,
+        config=config,
+        curated_base_path=curated_base_path,
+        writer_kwargs={
+            "partitions": partition_keys,
+            "mode": write_mode,
+            "spark": spark,
+            "database": database,
+            "register_hive_table": register_hive_tables,
+            "repair_partitions": repair_partitions,
+            "writer_options": parquet_options,
+            "write_config": curated_write_config,
+            "logger": logger,
+        },
+        logger=logger,
+        glue_client=glue_client,
+    )
+
+    redshift_results = _publish_redshift_if_enabled(
+        config=config,
+        dataframes={
+            TABLE_DIM_CARRIER: dim_carrier_df,
+            TABLE_FCT_SHIPMENT: fct_shipment_df,
+            TABLE_FCT_DELIVERY_EVENT: fct_delivery_event_df,
+            TABLE_AGG_SHIPMENT_DAILY: agg_shipment_daily_df,
+            TABLE_KPI_DELIVERY_DAILY: kpi_delivery_daily_df,
+        },
+        batch_date=batch_date,
+        logger=logger,
+        client=redshift_client,
+    )
 
     return {
         "batch_date": batch_date,
@@ -808,6 +903,8 @@ def _execute_daily_flow(
         "bronze": bronze_writes,
         "silver": silver_writes,
         "silver_summary": silver_summary,
+        "glue": glue_results,
+        "redshift": redshift_results,
         "quality": {
             entity: {
                 "status": result.get("status"),

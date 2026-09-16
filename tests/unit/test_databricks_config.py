@@ -127,6 +127,12 @@ def test_load_databricks_config_no_hardcoded_credentials() -> None:
     """Databricks config must not contain any credential-like strings."""
     cfg = load_config("databricks")
     forbidden = ("token", "secret", "password", "account_id", "workspace_url", "api_key")
+    # The optional Redshift section is inherited from base.yaml and has an
+    # intentionally empty secret_arn setting. Preserve the Databricks scan,
+    # while asserting that the inherited credential value is also empty.
+    redshift = cfg.pop("redshift")
+    assert redshift["enabled"] is False
+    assert redshift["secret_arn"] == ""
     cfg_str = str(cfg).lower()
     for term in forbidden:
         assert term not in cfg_str, f"Credential-like term '{term}' found in databricks config"

@@ -24,6 +24,9 @@ spark = [
 data-quality = [
   "pytest==8.3.5",
 ]
+aws = [
+  "boto3==1.35.99",
+]
 dev = [
   "pyspark==3.5.2",
   "pytest==8.3.5",

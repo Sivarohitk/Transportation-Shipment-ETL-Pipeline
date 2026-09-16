@@ -48,6 +48,35 @@ hive:
   register_tables: true
   repair_partitions: true
 
+# Optional downstream warehouse publication. Local and test runs remain
+# dependency- and credential-free while this is disabled.
+redshift:
+  enabled: false
+  region: ""
+  database: ""
+  workgroup_name: ""
+  cluster_identifier: ""
+  secret_arn: ""
+  database_user: ""
+  iam_role_arn: ""
+  source_s3_path: ""
+  staging_schema: transport_staging
+  target_schema: transport_analytics
+  audit_schema: transport_audit
+  poll_interval_seconds: 2
+  timeout_seconds: 900
+
+# Optional AWS Glue Data Catalog metadata for the five core S3 Gold tables.
+# This is separate from Spark's existing Hive registration.
+glue:
+  enabled: false
+  region: ""
+  database: ""
+  catalog_id: ""
+  update_existing_tables: true
+  register_partitions: true
+  failure_policy: fail
+
 partitioning:
   keys:
     - p_date
