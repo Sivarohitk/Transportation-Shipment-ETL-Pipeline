@@ -215,15 +215,14 @@ model, or scheduled Power BI refresh is claimed.
 
 ### Local
 
-The checked local/CI baseline is Python 3.10 with a Java runtime compatible
-with PySpark 3.5.2. Other Python versions allowed by the package metadata may
-require platform-specific Spark/Hadoop validation.
+The supported Windows local baseline is Python 3.12, PySpark 3.5.2, JDK 17,
+and a project-local `.venv`. The CI baseline remains Python 3.10. See the
+[Windows setup guide](docs/windows_setup.md) for diagnostics, JDK selection,
+and manual setup details.
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements-dev.txt
-python -m pip install -e .
+py -0p
+.\scripts\setup_windows_dev.ps1
 python -m transport_etl.main --job daily --config dev --run-date 2026-01-01
 ```
 
@@ -320,19 +319,19 @@ interventions, or measured production improvement.
 ## Testing
 
 ```powershell
-pytest -q
-ruff check .
-black --check .
+python -m pytest -q
+python -m ruff check .
+python -m black --check .
 ```
 
 Focused suites include:
 
 ```powershell
-pytest -q tests/unit
-pytest -q tests/integration
-pytest -q tests/data_quality tests/sql
-pytest -q tests/ml
-pytest -q tests/databricks
+python -m pytest -q tests/unit
+python -m pytest -q tests/integration
+python -m pytest -q tests/data_quality tests/sql
+python -m pytest -q tests/ml
+python -m pytest -q tests/databricks
 ```
 
 GitHub Actions installs the editable package, smoke-tests CLI entry points,

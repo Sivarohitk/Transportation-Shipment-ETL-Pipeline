@@ -112,7 +112,7 @@ def spark(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Any]:
     warehouse_dir = tmp_path_factory.mktemp("spark_warehouse")
     ivy_dir = tmp_path_factory.mktemp("spark_ivy")
 
-    spark_session = (
+    spark_builder = (
         SparkSession.builder.appName("transport-etl-tests")
         .master("local[2]")
         .config("spark.sql.session.timeZone", "UTC")
@@ -123,8 +123,14 @@ def spark(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Any]:
         .config("spark.driver.host", "127.0.0.1")
         .config("spark.pyspark.python", sys.executable)
         .config("spark.executorEnv.PYSPARK_PYTHON", sys.executable)
-        .getOrCreate()
     )
+    from transport_etl.common.spark import local_python_worker_module
+
+    worker_module = local_python_worker_module()
+    if worker_module is not None:
+        spark_builder = spark_builder.config("spark.python.worker.module", worker_module)
+
+    spark_session = spark_builder.getOrCreate()
 
     spark_session.sparkContext.setLogLevel("ERROR")
     yield spark_session

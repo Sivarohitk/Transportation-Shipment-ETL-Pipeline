@@ -11,6 +11,9 @@ dist/
 # Virtual environments
 .venv/
 venv/
+.env
+.env.*
+!.env.example
 
 # Tooling
 .pytest_cache/

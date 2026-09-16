@@ -18,6 +18,15 @@ from transport_etl.common.constants import (
     SUPPORTED_SPARK_PROFILES,
 )
 
+WINDOWS_PYTHON_WORKER_MODULE = "transport_etl.common.spark_worker"
+
+
+def local_python_worker_module() -> str | None:
+    """Return the PySpark 3.5.2 worker shim needed by Python 3.12+ on Windows."""
+    if os.name == "nt" and sys.version_info >= (3, 12):
+        return WINDOWS_PYTHON_WORKER_MODULE
+    return None
+
 
 def _profile_conf_path(profile: str, spark_profile_dir: str | Path = SPARK_PROFILE_DIR) -> Path:
     """Resolve profile config path for local/emr/databricks Spark settings."""
@@ -193,6 +202,9 @@ def create_spark_session(
         os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
         spark_conf.setdefault("spark.pyspark.python", sys.executable)
         spark_conf.setdefault("spark.executorEnv.PYSPARK_PYTHON", sys.executable)
+        worker_module = local_python_worker_module()
+        if worker_module is not None:
+            spark_conf.setdefault("spark.python.worker.module", worker_module)
 
     builder = SparkSession.builder.appName(app_name)
     for key, value in spark_conf.items():

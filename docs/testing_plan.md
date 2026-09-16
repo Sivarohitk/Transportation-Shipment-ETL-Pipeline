@@ -48,17 +48,17 @@ This project uses a layered testing approach to validate both engineering correc
 ## Execution Commands
 ```bash
 # From project root
-pytest -q
+python -m pytest -q
 ```
 
 ```bash
 # Optional: run only integration tests
-pytest -q tests/integration
+python -m pytest -q tests/integration
 ```
 
 ```bash
 # Optional: run only data-quality + SQL checks
-pytest -q tests/data_quality tests/sql
+python -m pytest -q tests/data_quality tests/sql
 ```
 
 ## Runtime Assumptions
@@ -67,7 +67,7 @@ pytest -q tests/data_quality tests/sql
 - All tests avoid external credentials and external systems
 
 ## CI/CD Recommendations
-- Run `pytest -q` on every PR
-- Add lint/type checks (`ruff`, `black --check`, `mypy`) as separate gates
+- Run `python -m pytest -q` on every PR
+- Add lint/type checks (`python -m ruff check .`, `python -m black --check .`) as separate gates
 - Keep synthetic data snapshots versioned for reproducible assertions
 - Add a nightly EMR smoke test in non-production AWS account using placeholder-safe config

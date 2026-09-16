@@ -25,6 +25,7 @@ data-quality = [
   "pytest==8.3.5",
 ]
 dev = [
+  "pyspark==3.5.2",
   "pytest==8.3.5",
   "pytest-cov==6.0.0",
   "black==24.10.0",
