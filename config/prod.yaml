@@ -4,6 +4,10 @@
 runtime:
   fail_fast: true
 
+# EMR uses an S3 checkpoint beneath paths.audit_base_path by default.
+pipeline_state:
+  enabled: true
+
 spark:
   profile: emr
   app_name: transport-shipment-etl-prod

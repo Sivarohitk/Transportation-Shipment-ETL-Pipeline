@@ -4,6 +4,9 @@
 runtime:
   fail_fast: false
 
+pipeline_state:
+  enabled: true
+
 spark:
   profile: local
   app_name: transport-shipment-etl-dev

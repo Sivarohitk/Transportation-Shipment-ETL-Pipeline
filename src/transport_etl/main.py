@@ -33,6 +33,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-date", default=None, help="Daily run date in YYYY-MM-DD")
     parser.add_argument("--start-date", default=None, help="Backfill start date in YYYY-MM-DD")
     parser.add_argument("--end-date", default=None, help="Backfill end date in YYYY-MM-DD")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Reprocess a date even when matching successful pipeline state exists",
+    )
 
     parser.add_argument("--raw-base-path", default=None, help="Override paths.raw_base_path")
     parser.add_argument(
@@ -114,6 +119,8 @@ def _build_overrides(args: argparse.Namespace) -> dict[str, Any]:
         overrides["runtime.fail_fast"] = bool(args.fail_fast)
     if args.register_hive is not None:
         overrides["hive.register_tables"] = bool(args.register_hive)
+    if getattr(args, "force", False):
+        overrides["pipeline_state.force"] = True
 
     return overrides
 

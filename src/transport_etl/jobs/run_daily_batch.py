@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import re
 import uuid
 from dataclasses import asdict
@@ -25,6 +27,14 @@ from transport_etl.common.constants import (
 from transport_etl.common.dates import DATE_FMT, parse_date, resolve_run_date
 from transport_etl.common.io import is_cloud_path, path_exists
 from transport_etl.common.logging import configure_logging, get_logger
+from transport_etl.common.pipeline_state import (
+    PipelineStateStore,
+    SourceFile,
+    create_state_store,
+    process_batch_with_state,
+    source_client_for_paths,
+    source_file_metadata,
+)
 from transport_etl.common.spark import create_spark_session_from_config, stop_spark_session
 from transport_etl.publish.hive_writer import write_partitioned_table
 from transport_etl.publish.partitions import ensure_partition_columns, required_partition_columns
@@ -161,6 +171,52 @@ def _resolve_region_lookup_path(reference_base_path: str) -> str:
     if not path_exists(candidate):
         raise FileNotFoundError(f"Region lookup file not found: {candidate}")
     return candidate
+
+
+def _resolve_source_manifest(
+    raw_base_path: str, reference_base_path: str, batch_date: str, s3_client: Any | None
+) -> list[SourceFile]:
+    """Resolve dated-then-undated inputs and fingerprint the exact files read."""
+    manifest: list[SourceFile] = []
+    for entity in _RAW_ENTITIES:
+        candidates = (
+            _join_storage_path(raw_base_path, f"{entity}_{batch_date}.csv"),
+            _join_storage_path(raw_base_path, f"{entity}.csv"),
+        )
+        for candidate in candidates:
+            try:
+                manifest.append(source_file_metadata(entity, candidate, s3_client=s3_client))
+                break
+            except FileNotFoundError:
+                continue
+        else:
+            raise FileNotFoundError(f"Raw source not found for entity={entity!r} date={batch_date}")
+    reference = _join_storage_path(reference_base_path, "region_lookup.csv")
+    manifest.append(source_file_metadata("region_lookup", reference, s3_client=s3_client))
+    return manifest
+
+
+def _processing_fingerprint(config: Mapping[str, Any]) -> str:
+    """Invalidate a success when its outputs or critical publisher settings change."""
+    relevant = {
+        key: config.get(key)
+        for key in (
+            "spark",
+            "paths",
+            "io",
+            "hive",
+            "quality",
+            "partitioning",
+            "redshift",
+            "glue",
+            "unity_catalog",
+        )
+    }
+    relevant["runtime"] = {
+        key: value for key, value in config.get("runtime", {}).items() if key != "fail_fast"
+    }
+    encoded = json.dumps(relevant, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _load_sql_file(path: Path) -> str:
@@ -353,6 +409,7 @@ def _execute_daily_flow(
     logger: Any,
     redshift_client: Any | None = None,
     glue_client: Any | None = None,
+    source_paths: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Execute end-to-end daily ETL flow."""
     from transport_etl.ingest.carriers import (
@@ -411,10 +468,19 @@ def _execute_daily_flow(
         "execution_mode": str(spark_config.get("profile", "local")),
     }
 
-    shipments_source = _resolve_entity_source_path(raw_base_path, "shipments", batch_date)
-    carriers_source = _resolve_entity_source_path(raw_base_path, "carriers", batch_date)
-    events_source = _resolve_entity_source_path(raw_base_path, "delivery_events", batch_date)
-    region_lookup_source = _resolve_region_lookup_path(reference_base_path)
+    sources = source_paths or {}
+    shipments_source = sources.get("shipments") or _resolve_entity_source_path(
+        raw_base_path, "shipments", batch_date
+    )
+    carriers_source = sources.get("carriers") or _resolve_entity_source_path(
+        raw_base_path, "carriers", batch_date
+    )
+    events_source = sources.get("delivery_events") or _resolve_entity_source_path(
+        raw_base_path, "delivery_events", batch_date
+    )
+    region_lookup_source = sources.get("region_lookup") or _resolve_region_lookup_path(
+        reference_base_path
+    )
 
     ingest_bad_path = _join_storage_path(
         staging_base_path, "quarantine", "ingest", f"p_date={batch_date}"
@@ -921,6 +987,8 @@ def run_daily_batch(
     run_date: str | None = None,
     overrides: Mapping[str, Any] | None = None,
     config_dir: str | Path | None = None,
+    state_store: PipelineStateStore | None = None,
+    source_client: Any | None = None,
 ) -> int:
     """Run the end-to-end daily ETL workflow."""
     loaded_config = (
@@ -954,12 +1022,69 @@ def run_daily_batch(
 
     logger.info("Daily batch started")
 
-    spark = None
     try:
-        spark = create_spark_session_from_config(config=config)
-        result = _execute_daily_flow(
-            spark=spark, config=config, batch_date=batch_date, logger=logger
-        )
+        state_config = config.get("pipeline_state", {})
+        if not isinstance(state_config, Mapping):
+            raise ValueError("pipeline_state configuration must be a mapping")
+
+        manifest: list[SourceFile] = []
+        metadata_client = source_client
+        if bool(state_config.get("enabled", False)):
+            root = str(state_config.get("root_path", "")).strip() or _join_storage_path(
+                str(paths.get("audit_base_path", "data/local/logs")), "pipeline_state"
+            )
+            reference_base = str(paths.get("reference_base_path", "data/sample/reference"))
+            metadata_client = source_client_for_paths(
+                [raw_base_path, reference_base, root], source_client
+            )
+            store = state_store or create_state_store(
+                root, str(state_config.get("backend", "auto")), s3_client=metadata_client
+            )
+            manifest = _resolve_source_manifest(
+                raw_base_path, reference_base, batch_date, metadata_client
+            )
+
+        def execute() -> dict[str, Any]:
+            spark = None
+            try:
+                spark = create_spark_session_from_config(config=config)
+                kwargs: dict[str, Any] = {}
+                if manifest:
+                    kwargs["source_paths"] = {source.entity: source.path for source in manifest}
+                result = _execute_daily_flow(
+                    spark=spark, config=config, batch_date=batch_date, logger=logger, **kwargs
+                )
+                if manifest:
+                    current = [
+                        source_file_metadata(source.entity, source.path, s3_client=metadata_client)
+                        for source in manifest
+                    ]
+                    if current != manifest:
+                        raise RuntimeError(
+                            "Source file changed during batch execution; retry the batch"
+                        )
+                return result
+            finally:
+                stop_spark_session(spark)
+
+        if manifest:
+            outcome = process_batch_with_state(
+                store,
+                batch_date,
+                run_id,
+                manifest,
+                _processing_fingerprint(config),
+                execute,
+                force=bool(state_config.get("force", False)),
+            )
+            if outcome.skipped:
+                logger.info(
+                    "Daily batch skipped: matching successful state for date=%s", batch_date
+                )
+                return 0
+            result = outcome.result or {}
+        else:
+            result = execute()
         logger.info("Daily batch completed successfully; outputs=%s", result.get("outputs"))
         return 0
     except ModuleNotFoundError as exc:
@@ -968,5 +1093,3 @@ def run_daily_batch(
     except Exception:
         logger.exception("Daily batch failed")
         return 1
-    finally:
-        stop_spark_session(spark)

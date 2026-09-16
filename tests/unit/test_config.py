@@ -18,6 +18,11 @@ def test_load_config_merges_base_and_dev_values() -> None:
     assert cfg["redshift"]["enabled"] is False
     assert cfg["glue"]["enabled"] is False
     assert cfg["glue"]["failure_policy"] == "fail"
+    assert cfg["pipeline_state"] == {
+        "enabled": True,
+        "backend": "auto",
+        "root_path": "",
+    }
 
 
 def test_load_prod_config_expands_redshift_placeholders(monkeypatch) -> None:
@@ -57,6 +62,7 @@ def test_load_prod_config_expands_glue_placeholders(monkeypatch) -> None:
     assert cfg["glue"]["region"] == "us-east-1"
     assert cfg["glue"]["database"] == "transport_curated"
     assert cfg["glue"]["catalog_id"] == ""
+    assert cfg["pipeline_state"]["enabled"] is True
 
 
 def test_resolve_config_path_handles_short_name() -> None:

@@ -32,6 +32,7 @@ route, region, and exception analysis.
 | Capability | Status |
 | --- | --- |
 | Local daily and backfill pipeline | Implemented and exercised with synthetic samples |
+| File-manifest incremental checkpoints | Local and S3 state stores implemented; enabled in dev/prod profiles, with fake-S3 tests but no live AWS validation |
 | EMR runtime | PySpark/S3/Hive-compatible configuration and deployment artifacts implemented; no live EMR cluster validation is claimed |
 | AWS Glue Data Catalog | Optional boto3-backed database, table, and partition registration implemented with fake-client tests; no live AWS validation is claimed |
 | Amazon Redshift publication | Optional Data API, Parquet COPY, staging, transactional MERGE, and audit path implemented with fake-client tests; no live AWS validation is claimed |
@@ -244,6 +245,35 @@ The dev profile reads clearly labeled sample data under `data/sample`, writes
 to `data/local`, and disables Hive registration by default. Native Windows
 Spark may require Hadoop/winutils support for Parquet writes; the dev profile
 can fall back to JSON for the affected invalid-record and curated writes.
+
+### File-based incremental processing
+
+The dev and EMR production profiles enable `pipeline_state`. For each batch
+date, the job resolves the dated shipment, carrier, and delivery-event CSVs
+(falling back to undated files), fingerprints those exact files plus the
+region lookup, and checks the successful batch manifest **before starting
+Spark**. An unchanged successful date is skipped. A changed source file or
+processing/publisher configuration is reprocessed; failed or interrupted
+attempts are retried. Backfill applies the same decision independently to
+each date. Use `--force` with daily or backfill to reprocess a successful date.
+For S3 runs, provide `--run-date` (or backfill dates); the job does not infer
+an S3 work queue from the wall clock.
+
+State lives under `paths.audit_base_path/pipeline_state` unless
+`pipeline_state.root_path` overrides it. Local state is atomically replaced;
+S3 state is written as one checksummed object. The state record includes the
+run ID, source paths/fingerprints/modification times, status, timestamp, and
+Bronze/Silver/Gold output locations. A batch becomes successful only after
+the ETL and configured critical Glue/Redshift publication return successfully.
+Glue's `warn` policy is deliberately non-critical. An operator must serialize
+concurrent runs for the same date; this checkpoint is not a distributed lock.
+Use `--force` to retry a Glue warning after fixing its cause.
+
+This is **date-and-file incremental batch processing**, not database CDC,
+streaming, or row-level change detection. S3 fingerprints use object metadata
+(version/ETag, size, modification time); local fingerprints hash file content.
+The base/Databricks profile leaves this checkpoint path disabled so existing
+Databricks Delta behavior is unchanged.
 
 ### Amazon EMR
 

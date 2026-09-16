@@ -136,3 +136,37 @@ def test_main_raises_for_nonzero_status_when_requested(
 
     with pytest.raises(RuntimeError, match="status 1"):
         cli.main(["--job", "daily", "--raise-on-error"])
+
+
+def test_force_flag_reaches_daily_and_backfill(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The explicit override must flow through both CLI entry points."""
+    received = []
+    monkeypatch.setattr(
+        cli,
+        "run_daily_batch",
+        lambda **kwargs: received.append(kwargs["overrides"]) or 0,
+    )
+    monkeypatch.setattr(
+        cli,
+        "run_backfill_batch",
+        lambda **kwargs: received.append(kwargs["overrides"]) or 0,
+    )
+    assert cli.main(["--job", "daily", "--force"]) == 0
+    assert (
+        cli.main(
+            [
+                "--job",
+                "backfill",
+                "--start-date",
+                "2026-01-01",
+                "--end-date",
+                "2026-01-02",
+                "--force",
+            ]
+        )
+        == 0
+    )
+    assert received == [
+        {"pipeline_state.force": True},
+        {"pipeline_state.force": True},
+    ]

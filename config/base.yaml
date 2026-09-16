@@ -7,6 +7,14 @@ runtime:
   default_write_mode: overwrite
   fail_fast: true
 
+# File-manifest checkpoints. Disabled in the shared base so existing custom
+# and Databricks profiles retain their current behavior unless opted in.
+pipeline_state:
+  enabled: false
+  backend: auto
+  # Empty uses paths.audit_base_path/pipeline_state.
+  root_path: ""
+
 paths:
   raw_base_path: data/sample/raw
   staging_base_path: data/local/staging

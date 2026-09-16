@@ -81,6 +81,7 @@ the EMR Spark, Parquet, or Hive path.
 | Gold write | Partitioned Parquet overwrite | Partitioned S3 Parquet overwrite | Partitioned managed Delta overwrite |
 | Optional Redshift publish | Disabled; no AWS credentials required | Dedicated unpartitioned S3 Parquet export, then Data API COPY/staging/MERGE when enabled | Disabled unless explicitly configured; not part of the live-validated Databricks workflow |
 | Orchestration | CLI daily/backfill | EMR step templates calling CLI | Three-task serverless Lakeflow Job |
+| File-manifest state | Atomic local checkpoint in dev | Checksummed S3 checkpoint in prod | Disabled by base profile; existing Delta workflow unchanged |
 | Validation status | Exercised with synthetic sample data | Artifacts/configuration only | Development bundle and workflow live-validated |
 
 ## Runtime configuration and resources
@@ -127,6 +128,41 @@ The daily job:
 Gold does not reread the physical Silver tables during the same run. The
 validated, deduplicated Silver DataFrames that were published are the inputs
 to staging SQL and enrichment immediately before Gold construction.
+
+## Control plane: file-manifest batch state
+
+`pipeline_state` is enabled in the dev and EMR production profiles. The daily
+entry point resolves each shipment, carrier, and delivery-event source for the
+requested batch date, preferring `entity_YYYY-MM-DD.csv` and then
+`entity.csv`. It also includes `region_lookup.csv`, because changing that
+reference changes Gold output. Local sources are SHA-256 hashed; S3 sources
+use object version/ETag, size, and modification time from `HeadObject`.
+The manifest and a processing-configuration fingerprint are compared with the
+date's last checkpoint before Spark starts. A matching `success` skips;
+`running`, `failed`, changed, and missing checkpoints execute. `--force`
+overrides a matching success. Backfill applies this independently per date.
+EMR/S3 scheduling should supply an explicit run date or backfill window;
+the checkpoint is not an S3 listing-based scheduler.
+
+The `PipelineStateStore` interface has local and S3 implementations. Local
+JSON writes use a same-directory temporary file, flush/fsync, and atomic
+replace. S3 writes use one checksummed object PUT, avoiding partial multipart
+state. A corrupt/unreadable checkpoint or store failure fails the job rather
+than silently skipping. The record contains batch date, run ID, status,
+timestamp, resolved source file identities, and Bronze/Silver/Gold output
+locations. A `success` write occurs only after quality, all outputs, and any
+configured critical Glue/Redshift publishing complete. Glue `warn` mode is
+non-critical; Glue `fail` mode and enabled Redshift failures prevent success.
+After fixing a non-critical Glue warning, `--force` retries publication.
+If a run stops mid-write, its `running` or `failed` checkpoint is retryable.
+The configured output modes provide rerun safety, while an operator must
+serialize concurrent runs for the same date; the checkpoint is not a lock.
+
+This is incremental processing at the **batch-date/file-manifest** level.
+It does not read database logs, capture individual changed rows, stream
+events, or implement CDC. Source modification times and object metadata help
+detect replacement files, not a row-level history. The base and Databricks
+profiles leave this checkpoint disabled to preserve their existing behavior.
 
 ## Bronze layer
 
