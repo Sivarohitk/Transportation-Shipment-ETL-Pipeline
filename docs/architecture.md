@@ -164,6 +164,71 @@ events, or implement CDC. Source modification times and object metadata help
 detect replacement files, not a row-level history. The base and Databricks
 profiles leave this checkpoint disabled to preserve their existing behavior.
 
+## Pipeline audit and CloudWatch metrics
+
+The old `monitor.audit.build_audit_record` returned only an in-memory
+`run_id`/`status`/`details` dictionary; `monitor.metrics.emit_batch_metrics`
+discarded its input. They are replaced by explicit `AuditStore` and
+`MetricsSink` interfaces. The dev profile writes an atomic JSON file per run;
+the EMR profile writes one checksummed S3 object per run. CloudWatch is an
+optional boto3-backed metrics sink and is disabled by default in all profiles.
+Neither local audit nor the disabled metrics sink constructs an AWS client.
+
+Daily runs record source, clean, rejected/quarantined, and core curated row
+counts where available. Rejected counts combine quality and Silver rejection
+events and are not claimed to be distinct business records. Failed runs keep
+the counts/stage statuses reached before the failure. Glue `warn` mode records
+`warning` and emits a Glue failure metric without failing the batch; Glue
+`fail` mode and Redshift errors prevent success. A successful audit write
+occurs before the batch-state success checkpoint; failure audit is attempted
+even if an earlier audit write failed. CloudWatch submission is best-effort
+after that checkpoint, so an API outage does not undo completed data work.
+Backfill writes a separate summary audit (`batch_date: null`) in addition to
+the per-date daily records.
+
+Illustrative synthetic-data audit record (counts are an example, not a claim
+about a production run):
+
+```json
+{
+  "run_id": "daily_2026-01-01_example",
+  "job": "daily",
+  "environment": "dev",
+  "batch_date": "2026-01-01",
+  "started_at": "2026-01-01T00:00:00+00:00",
+  "completed_at": "2026-01-01T00:00:02+00:00",
+  "status": "success",
+  "duration_seconds": 2.0,
+  "source_rows": {"shipments": 10},
+  "clean_rows": {"shipments": 8},
+  "rejected_rows": {"shipments": 2},
+  "curated_rows": {"fct_shipment": 8},
+  "quality_failures": {"shipments": []},
+  "redshift_status": "disabled",
+  "glue_status": "disabled",
+  "outputs": {"fct_shipment": "data/local/curated/fct_shipment"},
+  "error_type": null,
+  "error_message": null
+}
+```
+
+| Metric | Unit | Dimensions | Meaning |
+| --- | --- | --- | --- |
+| `PipelineSuccess`, `PipelineFailure` | Count | Job, Environment | One terminal outcome per executed attempt |
+| `PipelineDurationSeconds` | Seconds | Job, Environment | Elapsed attempt time |
+| `RowsRead` | Count | Job, Environment, Entity | Source DataFrame rows |
+| `RowsWritten` | Count | Job, Environment, Entity | Core curated table rows |
+| `RowsRejected` | Count | Job, Environment, Entity | Quality/Silver rejection events |
+| `DataQualityFailures` | Count | Job, Environment, Entity | Failed quality rules |
+| `SchemaDriftFailures` | Count | Job, Environment, Entity | Schema-drift rule failures |
+| `RedshiftLoadFailures` | Count | Job, Environment | Failed Redshift publish attempt |
+| `GlueCatalogFailures` | Count | Job, Environment | Failed or warning Glue registration |
+
+Run IDs never appear in metric dimensions. Audit error messages redact
+configured secrets, credential-bearing URI userinfo, common key/value
+credentials, and AWS access-key patterns. Real S3 and CloudWatch permissions,
+delivery, queryability, and failure recovery remain to be validated in AWS.
+
 ## Bronze layer
 
 Bronze uses the existing entity ingestion modules and adds operational

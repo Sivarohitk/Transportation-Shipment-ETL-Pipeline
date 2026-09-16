@@ -21,6 +21,7 @@ from transport_etl.common.constants import (
     TABLE_FCT_SHIPMENT,
     TABLE_KPI_DELIVERY_DAILY,
 )
+from transport_etl.monitor.audit import sanitize_error
 
 REDSHIFT_TABLE_ORDER = (
     TABLE_DIM_CARRIER,
@@ -499,7 +500,7 @@ def publish_curated_to_redshift(
                 "Redshift load completed table=%s source_path=%s statement_id=%s rows=%s "
                 "duration_seconds=%s status=%s",
                 result.table,
-                result.source_path,
+                sanitize_error(result.source_path, config),
                 result.statement_id,
                 result.rows,
                 result.duration_seconds,

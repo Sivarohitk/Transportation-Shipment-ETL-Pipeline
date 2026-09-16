@@ -19,6 +19,7 @@ from transport_etl.common.constants import (
     TABLE_FCT_SHIPMENT,
     TABLE_KPI_DELIVERY_DAILY,
 )
+from transport_etl.monitor.audit import sanitize_error
 from transport_etl.publish.partitions import required_partition_columns
 
 GLUE_TABLE_ORDER = (
@@ -356,9 +357,10 @@ def publish_curated_to_glue(
     except Exception as exc:
         if settings.failure_policy == "fail":
             raise
+        safe_error = sanitize_error(exc, config)
         if logger is not None:
-            logger.warning("Glue database registration failed: %s", exc)
-        return [GlueRegistrationResult("", "", "warning", error=str(exc))]
+            logger.warning("Glue database registration failed: %s", safe_error)
+        return [GlueRegistrationResult("", "", "warning", error=safe_error)]
 
     results: list[GlueRegistrationResult] = []
     keys = required_partition_columns()
@@ -378,8 +380,9 @@ def publish_curated_to_glue(
             if settings.failure_policy == "fail":
                 raise
             location = locations.get(table, "")
-            result = GlueRegistrationResult(table, location, "warning", error=str(exc))
+            safe_error = sanitize_error(exc, config)
+            result = GlueRegistrationResult(table, location, "warning", error=safe_error)
             if logger is not None:
-                logger.warning("Glue registration failed table=%s error=%s", table, exc)
+                logger.warning("Glue registration failed table=%s error=%s", table, safe_error)
         results.append(result)
     return results

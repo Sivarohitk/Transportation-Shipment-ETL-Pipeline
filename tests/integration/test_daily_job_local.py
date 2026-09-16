@@ -100,6 +100,15 @@ def test_daily_job_local_end_to_end(
 
     assert status == 0
 
+    audit_files = list((audit_base / "pipeline_audit").glob("daily_*.json"))
+    assert len(audit_files) == 1
+    audit_record = json.loads(audit_files[0].read_text(encoding="utf-8"))
+    assert audit_record["status"] == "success"
+    assert audit_record["batch_date"] == sample_run_date
+    assert audit_record["source_rows"]["shipments"] > 0
+    assert audit_record["clean_rows"]["shipments"] > 0
+    assert audit_record["curated_rows"]["fct_shipment"] > 0
+
     expected_tables = [
         "dim_carrier",
         "fct_shipment",

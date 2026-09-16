@@ -15,6 +15,20 @@ pipeline_state:
   # Empty uses paths.audit_base_path/pipeline_state.
   root_path: ""
 
+# Per-run JSON audit is opt-in in the shared base to preserve Databricks.
+# Dev and EMR production profiles enable it below their audit base paths.
+audit:
+  enabled: false
+  backend: auto
+  # Empty uses paths.audit_base_path/pipeline_audit.
+  path: ""
+
+# CloudWatch is an optional sink; local runs never need AWS credentials.
+cloudwatch:
+  enabled: false
+  region: ""
+  namespace: TransportationShipmentETL
+
 paths:
   raw_base_path: data/sample/raw
   staging_base_path: data/local/staging

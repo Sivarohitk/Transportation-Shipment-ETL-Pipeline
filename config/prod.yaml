@@ -8,6 +8,14 @@ runtime:
 pipeline_state:
   enabled: true
 
+audit:
+  enabled: true
+
+cloudwatch:
+  enabled: false
+  region: ${TRANSPORT_ETL_CLOUDWATCH_REGION}
+  namespace: ${TRANSPORT_ETL_CLOUDWATCH_NAMESPACE}
+
 spark:
   profile: emr
   app_name: transport-shipment-etl-prod

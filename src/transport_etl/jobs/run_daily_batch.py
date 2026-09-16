@@ -36,6 +36,9 @@ from transport_etl.common.pipeline_state import (
     source_file_metadata,
 )
 from transport_etl.common.spark import create_spark_session_from_config, stop_spark_session
+from transport_etl.monitor.audit import AuditStore, sanitize_error
+from transport_etl.monitor.metrics import MetricsSink
+from transport_etl.monitor.runner import PipelineRunMonitor
 from transport_etl.publish.hive_writer import write_partitioned_table
 from transport_etl.publish.partitions import ensure_partition_columns, required_partition_columns
 
@@ -360,6 +363,7 @@ def _write_gold_and_register_glue(
     writer_kwargs: Mapping[str, Any],
     logger: Any,
     glue_client: Any | None = None,
+    monitor: PipelineRunMonitor | None = None,
 ) -> tuple[dict[str, str], list[dict[str, Any]]]:
     """Write every Gold output before optional AWS Glue metadata registration."""
     from transport_etl.publish.glue_catalog import (
@@ -380,6 +384,11 @@ def _write_gold_and_register_glue(
             **writer_kwargs,
         )
 
+    if monitor is not None:
+        monitor.progress["curated_rows"] = {
+            name: _safe_count(frame) for name, frame in table_writes[:5]
+        }
+
     settings = GlueCatalogConfig.from_mapping(config)
     if not settings.enabled:
         return outputs, []
@@ -391,14 +400,25 @@ def _write_gold_and_register_glue(
         if settings.register_partitions
         else None
     )
-    results = publish_curated_to_glue(
-        config,
-        locations={name: outputs[name] for name in GLUE_TABLE_ORDER},
-        schemas={name: frame.schema for name, frame in core_frames.items()},
-        partition_values=partitions,
-        client=glue_client,
-        logger=logger,
-    )
+    if monitor is not None:
+        monitor.progress["glue_status"] = "running"
+    try:
+        results = publish_curated_to_glue(
+            config,
+            locations={name: outputs[name] for name in GLUE_TABLE_ORDER},
+            schemas={name: frame.schema for name, frame in core_frames.items()},
+            partition_values=partitions,
+            client=glue_client,
+            logger=logger,
+        )
+    except Exception:
+        if monitor is not None:
+            monitor.progress["glue_status"] = "failed"
+        raise
+    if monitor is not None:
+        monitor.progress["glue_status"] = (
+            "warning" if any(result.status == "warning" for result in results) else "success"
+        )
     return outputs, [asdict(result) for result in results]
 
 
@@ -410,6 +430,7 @@ def _execute_daily_flow(
     redshift_client: Any | None = None,
     glue_client: Any | None = None,
     source_paths: Mapping[str, str] | None = None,
+    monitor: PipelineRunMonitor | None = None,
 ) -> dict[str, Any]:
     """Execute end-to-end daily ETL flow."""
     from transport_etl.ingest.carriers import (
@@ -491,10 +512,10 @@ def _execute_daily_flow(
 
     logger.info(
         "Resolved inputs shipments=%s carriers=%s delivery_events=%s region_lookup=%s",
-        shipments_source,
-        carriers_source,
-        events_source,
-        region_lookup_source,
+        sanitize_error(shipments_source, config),
+        sanitize_error(carriers_source, config),
+        sanitize_error(events_source, config),
+        sanitize_error(region_lookup_source, config),
     )
 
     shipments_schema = load_shipments_schema_definition(schema_dir / "shipments.schema.json")
@@ -524,6 +545,13 @@ def _execute_daily_flow(
         schema_def=delivery_events_schema,
         bad_record_write_config=invalid_record_write_config,
     )
+
+    if monitor is not None:
+        monitor.progress["source_rows"] = {
+            "shipments": _safe_count(shipments_raw_df),
+            "carriers": _safe_count(carriers_raw_df),
+            "delivery_events": _safe_count(events_raw_df),
+        }
 
     logger.info("Ingest complete; running quality checks")
 
@@ -604,6 +632,16 @@ def _execute_daily_flow(
         "carriers": carriers_quality,
         "delivery_events": events_quality,
     }
+
+    if monitor is not None:
+        monitor.progress["quality_failures"] = {
+            entity: [str(rule) for rule in result.get("failed_rules", [])]
+            for entity, result in quality_summary.items()
+        }
+        monitor.progress["rejected_rows"] = {
+            entity: int(result.get("invalid_count", 0) or 0)
+            for entity, result in quality_summary.items()
+        }
 
     for entity, result in quality_summary.items():
         failed_rules = [str(rule) for rule in result.get("failed_rules", [])]
@@ -702,7 +740,7 @@ def _execute_daily_flow(
     bronze_writes_carriers_df = bronze_dfs[TABLE_BRONZE_CARRIERS]
     bronze_writes_events_df = bronze_dfs[TABLE_BRONZE_DELIVERY_EVENTS]
 
-    logger.info("Bronze layer published destinations=%s", bronze_writes)
+    logger.info("Bronze layer published destinations=%s", sanitize_error(bronze_writes, config))
 
     logger.info("Building Silver layer outputs")
 
@@ -815,9 +853,21 @@ def _execute_daily_flow(
             "invalid": silver_delivery_events_result.invalid_count,
         },
     }
+    if monitor is not None:
+        monitor.progress["clean_rows"] = {
+            "shipments": silver_shipments_result.survived_count,
+            "carriers": silver_carriers_result.survived_count,
+            "delivery_events": silver_delivery_events_result.survived_count,
+        }
+        for entity, rejected in (
+            ("shipments", silver_shipments_result.invalid_count),
+            ("carriers", silver_carriers_result.invalid_count),
+            ("delivery_events", silver_delivery_events_result.invalid_count),
+        ):
+            monitor.progress["rejected_rows"][entity] += rejected
     logger.info(
         "Silver layer published destinations=%s summary=%s",
-        silver_writes,
+        sanitize_error(silver_writes, config),
         silver_summary,
     )
 
@@ -947,21 +997,31 @@ def _execute_daily_flow(
         },
         logger=logger,
         glue_client=glue_client,
+        monitor=monitor,
     )
 
-    redshift_results = _publish_redshift_if_enabled(
-        config=config,
-        dataframes={
-            TABLE_DIM_CARRIER: dim_carrier_df,
-            TABLE_FCT_SHIPMENT: fct_shipment_df,
-            TABLE_FCT_DELIVERY_EVENT: fct_delivery_event_df,
-            TABLE_AGG_SHIPMENT_DAILY: agg_shipment_daily_df,
-            TABLE_KPI_DELIVERY_DAILY: kpi_delivery_daily_df,
-        },
-        batch_date=batch_date,
-        logger=logger,
-        client=redshift_client,
-    )
+    if monitor is not None and config.get("redshift", {}).get("enabled"):
+        monitor.progress["redshift_status"] = "running"
+    try:
+        redshift_results = _publish_redshift_if_enabled(
+            config=config,
+            dataframes={
+                TABLE_DIM_CARRIER: dim_carrier_df,
+                TABLE_FCT_SHIPMENT: fct_shipment_df,
+                TABLE_FCT_DELIVERY_EVENT: fct_delivery_event_df,
+                TABLE_AGG_SHIPMENT_DAILY: agg_shipment_daily_df,
+                TABLE_KPI_DELIVERY_DAILY: kpi_delivery_daily_df,
+            },
+            batch_date=batch_date,
+            logger=logger,
+            client=redshift_client,
+        )
+    except Exception:
+        if monitor is not None:
+            monitor.progress["redshift_status"] = "failed"
+        raise
+    if monitor is not None and redshift_results:
+        monitor.progress["redshift_status"] = "success"
 
     return {
         "batch_date": batch_date,
@@ -989,6 +1049,9 @@ def run_daily_batch(
     config_dir: str | Path | None = None,
     state_store: PipelineStateStore | None = None,
     source_client: Any | None = None,
+    audit_store: AuditStore | None = None,
+    metrics_sink: MetricsSink | None = None,
+    cloudwatch_client: Any | None = None,
 ) -> int:
     """Run the end-to-end daily ETL workflow."""
     loaded_config = (
@@ -1022,7 +1085,19 @@ def run_daily_batch(
 
     logger.info("Daily batch started")
 
+    monitor: PipelineRunMonitor | None = None
     try:
+        monitor = PipelineRunMonitor(
+            config,
+            run_id=run_id,
+            job="daily",
+            batch_date=batch_date,
+            audit_store=audit_store,
+            metrics_sink=metrics_sink,
+            s3_client=source_client,
+            cloudwatch_client=cloudwatch_client,
+            logger=logger,
+        )
         state_config = config.get("pipeline_state", {})
         if not isinstance(state_config, Mapping):
             raise ValueError("pipeline_state configuration must be a mapping")
@@ -1044,7 +1119,10 @@ def run_daily_batch(
                 raw_base_path, reference_base, batch_date, metadata_client
             )
 
+        success_audit_record: dict[str, Any] | None = None
+
         def execute() -> dict[str, Any]:
+            nonlocal success_audit_record
             spark = None
             try:
                 spark = create_spark_session_from_config(config=config)
@@ -1052,7 +1130,12 @@ def run_daily_batch(
                 if manifest:
                     kwargs["source_paths"] = {source.entity: source.path for source in manifest}
                 result = _execute_daily_flow(
-                    spark=spark, config=config, batch_date=batch_date, logger=logger, **kwargs
+                    spark=spark,
+                    config=config,
+                    batch_date=batch_date,
+                    logger=logger,
+                    monitor=monitor,
+                    **kwargs,
                 )
                 if manifest:
                     current = [
@@ -1063,6 +1146,7 @@ def run_daily_batch(
                         raise RuntimeError(
                             "Source file changed during batch execution; retry the batch"
                         )
+                success_audit_record = monitor.persist_success(result)
                 return result
             finally:
                 stop_spark_session(spark)
@@ -1078,6 +1162,7 @@ def run_daily_batch(
                 force=bool(state_config.get("force", False)),
             )
             if outcome.skipped:
+                monitor.persist_skipped()
                 logger.info(
                     "Daily batch skipped: matching successful state for date=%s", batch_date
                 )
@@ -1085,11 +1170,24 @@ def run_daily_batch(
             result = outcome.result or {}
         else:
             result = execute()
-        logger.info("Daily batch completed successfully; outputs=%s", result.get("outputs"))
+        if success_audit_record is not None:
+            monitor.emit_success(success_audit_record)
+        logger.info(
+            "Daily batch completed successfully; outputs=%s",
+            sanitize_error(result.get("outputs"), config),
+        )
         return 0
     except ModuleNotFoundError as exc:
-        logger.error("Missing runtime dependency: %s", exc)
+        if monitor is not None:
+            monitor.fail(exc)
+        logger.error("Missing runtime dependency: %s", sanitize_error(exc, config))
         return 2
-    except Exception:
-        logger.exception("Daily batch failed")
+    except Exception as exc:
+        if monitor is not None:
+            monitor.fail(exc)
+        logger.error(
+            "Daily batch failed type=%s message=%s",
+            type(exc).__name__,
+            sanitize_error(exc, config),
+        )
         return 1

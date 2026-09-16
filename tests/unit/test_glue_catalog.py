@@ -312,6 +312,13 @@ def test_glue_failure_policy_fail_or_warn() -> None:
     assert "access denied" in results[0].error
 
 
+def test_glue_warning_redacts_credentials() -> None:
+    client = _FakeGlueClient()
+    client.fail_get_database = RuntimeError("denied password=topsecret")
+    results = publish_curated_to_glue(_config(failure_policy="warn"), {}, {}, client=client)
+    assert "topsecret" not in results[0].error
+
+
 def test_warn_policy_continues_after_one_table_failure() -> None:
     class _OneTableFails(_FakeGlueClient):
         def get_table(self, **kwargs):

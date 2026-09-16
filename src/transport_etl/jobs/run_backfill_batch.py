@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import uuid
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -10,6 +11,9 @@ from transport_etl.common.config import load_config
 from transport_etl.common.dates import enumerate_dates, resolve_backfill_window
 from transport_etl.common.logging import configure_logging, get_logger
 from transport_etl.jobs.run_daily_batch import run_daily_batch
+from transport_etl.monitor.audit import AuditStore, sanitize_error
+from transport_etl.monitor.metrics import MetricsSink
+from transport_etl.monitor.runner import PipelineRunMonitor
 
 
 def _set_nested_value(payload: dict[str, Any], dotted_key: str, value: Any) -> None:
@@ -46,6 +50,9 @@ def run_backfill_batch(
     end_date: str | None,
     overrides: Mapping[str, Any] | None = None,
     config_dir: str | Path | None = None,
+    audit_store: AuditStore | None = None,
+    metrics_sink: MetricsSink | None = None,
+    cloudwatch_client: Any | None = None,
 ) -> int:
     """Run backfill ETL workflow over an inclusive date window."""
     loaded_config = (
@@ -61,48 +68,66 @@ def run_backfill_batch(
         json_logs=bool(logging_config.get("json", False)),
     )
 
+    run_id = f"backfill_{uuid.uuid4().hex[:12]}"
     logger = get_logger(
         "transport_etl.jobs.backfill",
+        run_id=run_id,
         job="backfill",
         env=str(config.get("app", {}).get("env", "unknown")),
     )
 
+    monitor: PipelineRunMonitor | None = None
     try:
+        monitor = PipelineRunMonitor(
+            config,
+            run_id=run_id,
+            job="backfill",
+            batch_date=None,
+            audit_store=audit_store,
+            metrics_sink=metrics_sink,
+            cloudwatch_client=cloudwatch_client,
+            logger=logger,
+        )
         start, end = resolve_backfill_window(start_date=start_date, end_date=end_date)
-    except ValueError as exc:
-        logger.error("Invalid backfill date window: %s", exc)
-        return 1
+        run_dates = enumerate_dates(start=start, end=end)
+        runtime_config = (
+            config.get("runtime", {}) if isinstance(config.get("runtime"), Mapping) else {}
+        )
+        fail_fast = bool(runtime_config.get("fail_fast", True))
 
-    run_dates = enumerate_dates(start=start, end=end)
-    runtime_config = config.get("runtime", {}) if isinstance(config.get("runtime"), Mapping) else {}
-    fail_fast = bool(runtime_config.get("fail_fast", True))
-
-    logger.info(
-        "Backfill batch started start_date=%s end_date=%s total_dates=%s",
-        start_date,
-        end_date,
-        len(run_dates),
-    )
-
-    failures: list[str] = []
-    for run_date in run_dates:
-        logger.info("Backfill executing date=%s", run_date)
-        status = run_daily_batch(
-            config_path=config_path,
-            config_dir=config_dir,
-            run_date=run_date,
-            overrides=overrides,
+        logger.info(
+            "Backfill batch started start_date=%s end_date=%s total_dates=%s",
+            start_date,
+            end_date,
+            len(run_dates),
         )
 
-        if status != 0:
-            failures.append(run_date)
-            logger.error("Backfill date failed run_date=%s status=%s", run_date, status)
-            if fail_fast:
-                break
+        failures: list[str] = []
+        for run_date in run_dates:
+            logger.info("Backfill executing date=%s", run_date)
+            status = run_daily_batch(
+                config_path=config_path,
+                config_dir=config_dir,
+                run_date=run_date,
+                overrides=overrides,
+            )
+            if status != 0:
+                failures.append(run_date)
+                logger.error("Backfill date failed run_date=%s status=%s", run_date, status)
+                if fail_fast:
+                    break
 
-    if failures:
-        logger.error("Backfill completed with failures failed_dates=%s", failures)
+        if failures:
+            raise RuntimeError(f"Backfill date failures: {', '.join(failures)}")
+
+        record = monitor.persist_success({"outputs": {}})
+        monitor.emit_success(record)
+        logger.info("Backfill completed successfully")
+        return 0
+    except Exception as exc:
+        if monitor is not None:
+            monitor.fail(exc)
+        logger.error(
+            "Backfill failed type=%s message=%s", type(exc).__name__, sanitize_error(exc, config)
+        )
         return 1
-
-    logger.info("Backfill completed successfully")
-    return 0

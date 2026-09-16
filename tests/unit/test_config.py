@@ -23,6 +23,8 @@ def test_load_config_merges_base_and_dev_values() -> None:
         "backend": "auto",
         "root_path": "",
     }
+    assert cfg["audit"] == {"enabled": True, "backend": "auto", "path": ""}
+    assert cfg["cloudwatch"]["enabled"] is False
 
 
 def test_load_prod_config_expands_redshift_placeholders(monkeypatch) -> None:
@@ -63,6 +65,8 @@ def test_load_prod_config_expands_glue_placeholders(monkeypatch) -> None:
     assert cfg["glue"]["database"] == "transport_curated"
     assert cfg["glue"]["catalog_id"] == ""
     assert cfg["pipeline_state"]["enabled"] is True
+    assert cfg["audit"]["enabled"] is True
+    assert cfg["cloudwatch"]["enabled"] is False
 
 
 def test_resolve_config_path_handles_short_name() -> None:

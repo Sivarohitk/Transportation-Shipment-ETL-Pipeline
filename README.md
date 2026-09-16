@@ -33,6 +33,7 @@ route, region, and exception analysis.
 | --- | --- |
 | Local daily and backfill pipeline | Implemented and exercised with synthetic samples |
 | File-manifest incremental checkpoints | Local and S3 state stores implemented; enabled in dev/prod profiles, with fake-S3 tests but no live AWS validation |
+| Pipeline audit and metrics | Per-run local/S3 JSON audit implemented; optional CloudWatch metrics use fake-client tests, not live AWS validation |
 | EMR runtime | PySpark/S3/Hive-compatible configuration and deployment artifacts implemented; no live EMR cluster validation is claimed |
 | AWS Glue Data Catalog | Optional boto3-backed database, table, and partition registration implemented with fake-client tests; no live AWS validation is claimed |
 | Amazon Redshift publication | Optional Data API, Parquet COPY, staging, transactional MERGE, and audit path implemented with fake-client tests; no live AWS validation is claimed |
@@ -274,6 +275,21 @@ streaming, or row-level change detection. S3 fingerprints use object metadata
 (version/ETag, size, modification time); local fingerprints hash file content.
 The base/Databricks profile leaves this checkpoint path disabled so existing
 Databricks Delta behavior is unchanged.
+
+### Pipeline audit and optional CloudWatch metrics
+
+The dev and EMR production profiles write one JSON audit record per daily run
+and backfill attempt under `paths.audit_base_path/pipeline_audit` (or
+`audit.path`). Records include run timing, row counts, quality failures,
+curated output counts, Glue/Redshift status, and sanitized failure details.
+Audit persistence is required for a successful run: a failed audit write
+keeps the date retryable. Failure audit writes are attempted even when an ETL
+or publisher stage raises. CloudWatch remains disabled by default, including
+production; set `cloudwatch.enabled`, `region`, and `namespace` only after
+configuring AWS access. CloudWatch API errors are logged safely but do not
+turn a completed batch into a failed one. Metric dimensions are limited to
+Job, Environment, and Entity—never run ID. See the [audit record and metric
+inventory](docs/architecture.md#pipeline-audit-and-cloudwatch-metrics).
 
 ### Amazon EMR
 

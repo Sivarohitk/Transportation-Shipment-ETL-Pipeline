@@ -7,6 +7,9 @@ runtime:
 pipeline_state:
   enabled: true
 
+audit:
+  enabled: true
+
 spark:
   profile: local
   app_name: transport-shipment-etl-dev
