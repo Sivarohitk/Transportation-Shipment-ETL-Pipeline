@@ -1,0 +1,45 @@
+# Glue Spark execution profile. All S3 and AWS identifiers are deployment inputs.
+app:
+  env: glue
+
+runtime:
+  fail_fast: true
+
+pipeline_state:
+  enabled: true
+
+audit:
+  enabled: true
+
+spark:
+  profile: glue
+  app_name: transport-shipment-etl-glue
+  enable_hive_support: false
+
+paths:
+  raw_base_path: s3://your-bucket/transport/raw
+  staging_base_path: s3://your-bucket/transport/staging
+  curated_base_path: s3://your-bucket/transport/curated
+  audit_base_path: s3://your-bucket/transport/logs
+  reference_base_path: s3://your-bucket/transport/reference
+
+hive:
+  register_tables: false
+  repair_partitions: false
+
+# Glue Data Catalog registration uses the existing boto3 adapter after Gold writes.
+glue:
+  enabled: false
+  region: ""
+  database: ""
+  update_existing_tables: true
+  register_partitions: true
+  failure_policy: fail
+
+# Redshift remains independently opt-in through job parameters or config.
+redshift:
+  enabled: false
+
+logging:
+  level: INFO
+  json: true

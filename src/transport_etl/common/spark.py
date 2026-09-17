@@ -10,10 +10,12 @@ from typing import Any, Mapping
 from transport_etl.common.constants import (
     SPARK_DATABRICKS_CONF_FILE,
     SPARK_EMR_CONF_FILE,
+    SPARK_GLUE_CONF_FILE,
     SPARK_LOCAL_CONF_FILE,
     SPARK_PROFILE_DATABRICKS,
     SPARK_PROFILE_DIR,
     SPARK_PROFILE_EMR,
+    SPARK_PROFILE_GLUE,
     SPARK_PROFILE_LOCAL,
     SUPPORTED_SPARK_PROFILES,
 )
@@ -29,11 +31,13 @@ def local_python_worker_module() -> str | None:
 
 
 def _profile_conf_path(profile: str, spark_profile_dir: str | Path = SPARK_PROFILE_DIR) -> Path:
-    """Resolve profile config path for local/emr/databricks Spark settings."""
+    """Resolve profile config path for local, EMR, Glue, or Databricks Spark settings."""
     if profile == SPARK_PROFILE_LOCAL:
         filename = SPARK_LOCAL_CONF_FILE
     elif profile == SPARK_PROFILE_EMR:
         filename = SPARK_EMR_CONF_FILE
+    elif profile == SPARK_PROFILE_GLUE:
+        filename = SPARK_GLUE_CONF_FILE
     elif profile == SPARK_PROFILE_DATABRICKS:
         filename = SPARK_DATABRICKS_CONF_FILE
     else:

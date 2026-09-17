@@ -16,16 +16,24 @@ SPARK_PROFILE_DIR = CONFIG_DIR / "spark"
 BASE_CONFIG_FILE = "base.yaml"
 DEV_CONFIG_FILE = "dev.yaml"
 PROD_CONFIG_FILE = "prod.yaml"
+GLUE_CONFIG_FILE = "glue.yaml"
 DATABRICKS_CONFIG_FILE = "databricks.yaml"
-SUPPORTED_ENVS = {"base", "dev", "prod", "databricks"}
+SUPPORTED_ENVS = {"base", "dev", "prod", "glue", "databricks"}
 
 # Spark profiles
 SPARK_PROFILE_LOCAL = "local"
 SPARK_PROFILE_EMR = "emr"
+SPARK_PROFILE_GLUE = "glue"
 SPARK_PROFILE_DATABRICKS = "databricks"
-SUPPORTED_SPARK_PROFILES = {SPARK_PROFILE_LOCAL, SPARK_PROFILE_EMR, SPARK_PROFILE_DATABRICKS}
+SUPPORTED_SPARK_PROFILES = {
+    SPARK_PROFILE_LOCAL,
+    SPARK_PROFILE_EMR,
+    SPARK_PROFILE_GLUE,
+    SPARK_PROFILE_DATABRICKS,
+}
 SPARK_LOCAL_CONF_FILE = "local.conf"
 SPARK_EMR_CONF_FILE = "emr.conf"
+SPARK_GLUE_CONF_FILE = "glue.conf"
 SPARK_DATABRICKS_CONF_FILE = "databricks.conf"
 
 # Table names

@@ -295,6 +295,26 @@ def test_publish_uses_expected_order_and_is_rerunnable(project_root: Path) -> No
     assert all(any("MERGE INTO" in sql for sql in call["Sqls"]) for call in first_load_calls)
 
 
+def test_publish_reads_bootstrap_sql_from_runtime_resource_root(tmp_path: Path) -> None:
+    sql_root = tmp_path / "sql" / "redshift"
+    sql_root.mkdir(parents=True)
+    (sql_root / "001_bootstrap.sql").write_text("SELECT 1;", encoding="utf-8")
+    config = _enabled_config()
+    config["runtime"] = {"resource_base_path": str(tmp_path)}
+    frames = {table: _FakeDataFrame([]) for table in REDSHIFT_TABLE_ORDER}
+    client = _FakeDataApiClient()
+
+    publish_curated_to_redshift(
+        config,
+        dataframes=frames,
+        batch_id="daily_2026-01-01",
+        client=client,
+        sleep=lambda _: None,
+    )
+
+    assert client.batch_calls[0]["Sqls"] == ["SELECT 1"]
+
+
 def test_sql_assets_define_all_warehouse_tables(project_root: Path) -> None:
     sql_root = project_root / "sql" / "redshift"
     combined = "\n".join(

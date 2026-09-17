@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS {{target_schema}}.dim_carrier (
     PRIMARY KEY (carrier_id, p_date)
 )
 DISTSTYLE AUTO
-SORTKEY (p_date, carrier_id);
+SORTKEY AUTO
+ENCODE AUTO;
 
 CREATE TABLE IF NOT EXISTS {{target_schema}}.fct_shipment (
     shipment_id VARCHAR(128) NOT NULL,
@@ -40,7 +41,8 @@ CREATE TABLE IF NOT EXISTS {{target_schema}}.fct_shipment (
     PRIMARY KEY (shipment_id)
 )
 DISTSTYLE AUTO
-SORTKEY (p_date, shipment_id);
+SORTKEY AUTO
+ENCODE AUTO;
 
 CREATE TABLE IF NOT EXISTS {{target_schema}}.fct_delivery_event (
     event_id VARCHAR(128) NOT NULL,
@@ -62,7 +64,8 @@ CREATE TABLE IF NOT EXISTS {{target_schema}}.fct_delivery_event (
     PRIMARY KEY (event_id)
 )
 DISTSTYLE AUTO
-SORTKEY (p_date, event_id);
+SORTKEY AUTO
+ENCODE AUTO;
 
 CREATE TABLE IF NOT EXISTS {{target_schema}}.agg_shipment_daily (
     p_date DATE NOT NULL,
@@ -84,7 +87,8 @@ CREATE TABLE IF NOT EXISTS {{target_schema}}.agg_shipment_daily (
     PRIMARY KEY (p_date, region_code, carrier_id)
 )
 DISTSTYLE AUTO
-SORTKEY (p_date, region_code, carrier_id);
+SORTKEY AUTO
+ENCODE AUTO;
 
 CREATE TABLE IF NOT EXISTS {{target_schema}}.kpi_delivery_daily (
     p_date DATE NOT NULL,
@@ -107,4 +111,5 @@ CREATE TABLE IF NOT EXISTS {{target_schema}}.kpi_delivery_daily (
     PRIMARY KEY (p_date, region_code, carrier_id)
 )
 DISTSTYLE AUTO
-SORTKEY (p_date, region_code, carrier_id);
+SORTKEY AUTO
+ENCODE AUTO;

@@ -1,0 +1,18 @@
+{
+  "--config": "glue",
+  "--run_date": "2026-01-01",
+  "--extra-py-files": "s3://<ARTIFACT_BUCKET>/transport-etl/glue/transport_etl_code.zip",
+  "--extra-files": "s3://<ARTIFACT_BUCKET>/transport-etl/glue/transport_etl_resources.zip",
+  "--additional-python-modules": "PyYAML==6.0.2",
+  "--TempDir": "s3://<ARTIFACT_BUCKET>/transport-etl/glue/tmp/",
+  "--raw_base_path": "s3://<DATA_BUCKET>/transport/raw",
+  "--reference_base_path": "s3://<DATA_BUCKET>/transport/reference",
+  "--staging_base_path": "s3://<DATA_BUCKET>/transport/staging",
+  "--curated_base_path": "s3://<DATA_BUCKET>/transport/curated",
+  "--audit_base_path": "s3://<DATA_BUCKET>/transport/audit",
+  "--glue_enabled": "true",
+  "--glue_region": "<AWS_REGION>",
+  "--glue_database": "<GLUE_DATABASE>",
+  "--glue_failure_policy": "fail",
+  "--redshift_enabled": "false"
+}

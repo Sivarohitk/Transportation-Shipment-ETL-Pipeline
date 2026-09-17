@@ -965,12 +965,11 @@ def _execute_daily_flow(
         fct_shipment_df=fct_shipment_df,
     )
 
+    # These three frames are written below. Counting them only for a log line
+    # would execute their aggregate/join DAGs a second time before the write.
     logger.info(
-        "Gold analytics built from Silver: carrier_performance=%s, "
-        "route_performance=%s, delivery_exception_summary=%s",
-        _safe_count(carrier_performance_df),
-        _safe_count(route_performance_df),
-        _safe_count(delivery_exception_summary_df),
+        "Gold analytics built from Silver: carrier_performance, "
+        "route_performance, delivery_exception_summary"
     )
 
     table_writes = [
@@ -1065,6 +1064,7 @@ def run_daily_batch(
     audit_store: AuditStore | None = None,
     metrics_sink: MetricsSink | None = None,
     cloudwatch_client: Any | None = None,
+    spark_session: Any | None = None,
 ) -> int:
     """Run the end-to-end daily ETL workflow."""
     loaded_config = (
@@ -1140,9 +1140,10 @@ def run_daily_batch(
 
         def execute() -> dict[str, Any]:
             nonlocal success_audit_record
-            spark = None
+            spark = spark_session
             try:
-                spark = create_spark_session_from_config(config=config)
+                if spark is None:
+                    spark = create_spark_session_from_config(config=config)
                 kwargs: dict[str, Any] = {}
                 if manifest:
                     kwargs["source_paths"] = {source.entity: source.path for source in manifest}
@@ -1171,7 +1172,8 @@ def run_daily_batch(
                 success_audit_record = monitor.persist_success(result)
                 return result
             finally:
-                stop_spark_session(spark)
+                if spark_session is None:
+                    stop_spark_session(spark)
 
         if manifest:
             outcome = process_batch_with_state(

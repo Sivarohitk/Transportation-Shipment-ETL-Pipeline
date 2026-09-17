@@ -480,7 +480,11 @@ def publish_curated_to_redshift(
     if dataframes is None:
         raise ValueError("dataframes are required when Redshift publishing is enabled")
 
-    resource_root = Path(__file__).resolve().parents[3]
+    runtime = config.get("runtime", {})
+    configured_root = runtime.get("resource_base_path") if isinstance(runtime, Mapping) else None
+    resource_root = (
+        Path(str(configured_root)) if configured_root else Path(__file__).resolve().parents[3]
+    )
     resolved_sql_dir = Path(sql_dir) if sql_dir is not None else resource_root / "sql" / "redshift"
     destinations = export_curated_for_redshift(dataframes, settings, batch_id)
     api = RedshiftDataApi(

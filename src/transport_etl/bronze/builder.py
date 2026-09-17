@@ -109,18 +109,15 @@ def _resolve_bad_records_path(
     return f"{normalized_base}/{entity}"
 
 
-def _log_summary(df: DataFrame, entity: str, source_file: str) -> int:
-    """Log Bronze record count for an entity and return the count."""
+def _log_summary(df: DataFrame, entity: str, source_file: str) -> None:
+    """Log build metadata without materializing a separate Spark count job."""
     _require_spark()
-    count = int(df.count())
     LOGGER.info(
-        "Bronze build entity=%s source=%s rows=%s metadata=%s",
+        "Bronze build entity=%s source=%s metadata=%s",
         entity,
         source_file,
-        count,
         list(BRONZE_METADATA_COLUMNS),
     )
-    return count
 
 
 def build_bronze_shipments(

@@ -49,6 +49,32 @@ def test_daily_state_skips_success_and_reprocesses_modified_file(
     assert calls == ["2026-01-01", "2026-01-01"]
 
 
+def test_daily_accepts_external_spark_without_creating_or_stopping_it(monkeypatch) -> None:
+    spark = object()
+    seen = []
+    monkeypatch.setattr(
+        daily,
+        "create_spark_session_from_config",
+        lambda config: (_ for _ in ()).throw(AssertionError("created Spark")),
+    )
+    monkeypatch.setattr(daily, "stop_spark_session", lambda session: seen.append("stopped"))
+    monkeypatch.setattr(
+        daily,
+        "_execute_daily_flow",
+        lambda **kwargs: (seen.append(kwargs["spark"]), {"outputs": {}})[1],
+    )
+    assert (
+        daily.run_daily_batch(
+            "base",
+            "2026-01-01",
+            {"pipeline_state.enabled": False},
+            spark_session=spark,
+        )
+        == 0
+    )
+    assert seen == [spark]
+
+
 def test_daily_state_failed_publish_retries_then_force_reprocesses(
     monkeypatch, tmp_path: Path
 ) -> None:

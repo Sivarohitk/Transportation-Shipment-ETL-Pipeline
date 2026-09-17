@@ -4,15 +4,19 @@
 
 The project converts shipment, carrier, delivery-event, and region-reference
 CSV data into quality-controlled operational facts and decision-support
-outputs. It shares transformation logic across three execution profiles while
-keeping each platform's storage and catalog behavior explicit.
+outputs. It shares transformation logic across local, EMR, and Glue Spark
+profiles while keeping each platform's storage and catalog behavior explicit.
 
 - **Local:** development and tests with partitioned Parquet; the dev profile
   disables Hive registration and can fall back to JSON for specific Windows
   Hadoop write failures.
 - **Amazon EMR:** S3-backed Parquet and Spark Hive registration, with optional
   separate AWS Glue Data Catalog API registration for five Gold tables. A live
-  EMR or Glue run is not claimed.
+  EMR run is not claimed.
+- **AWS Glue Spark execution:** a Glue-managed Spark session invokes the same
+  daily ETL and S3 Parquet publication path, with optional Data Catalog and
+  Redshift steps. Artifact and adapter tests run locally; no live Glue job
+  execution is claimed.
 - **Amazon Redshift (optional publication):** selected S3-backed Gold outputs
   can be exported in a COPY-compatible Parquet layout and loaded through the
   Redshift Data API. This path is disabled by default and has fake-client test
@@ -46,7 +50,14 @@ flowchart TB
         RX --> RS["Redshift Data API<br/>COPY → staging → MERGE → audit"]
     end
 
-    subgraph DBX["Databricks profile — live validated"]
+    subgraph GLUE["Glue Spark profile — not yet AWS validated"]
+        GS["Glue-managed Spark session"] --> GE["Shared ingest, quality,<br/>transform, and daily orchestration"]
+        GE --> GG["Gold S3 Parquet"]
+        GG -. "glue.enabled=true" .-> GGC["AWS Glue Data Catalog"]
+        GG -. "redshift.enabled=true" .-> GR["Redshift Data API"]
+    end
+
+    subgraph DBX["Databricks profile — earlier dev run validated"]
         DB["Bronze managed Delta<br/>source + ingestion metadata"] --> DS["Silver validation + MERGE<br/>managed Delta latest state"]
         DS --> DG["Gold managed Delta<br/>facts, aggregates, KPIs"]
         DG -. "analysis context;<br/>not the current scorer input" .-> ML["Late-risk ML scoring"]
@@ -57,6 +68,7 @@ flowchart TB
 
     PROFILE --> LB
     PROFILE --> EB
+    PROFILE --> GS
     PROFILE --> DB
 ```
 
@@ -70,19 +82,22 @@ the EMR Spark, Parquet, or Hive path.
 
 ## Runtime comparison
 
-| Concern | Local | Amazon EMR | Databricks |
-| --- | --- | --- | --- |
-| Spark session | Package creates local PySpark session | Package creates/configures YARN Spark session | Package reuses the runtime-managed session |
-| Input storage | `data/sample` by dev default | Configured S3 paths | Configured Unity Catalog Volume paths |
-| Table format | Parquet; dev-only JSON fallback for a specific Windows failure | Parquet | Managed Delta |
-| Catalog behavior | Optional Spark Hive; disabled by dev default | Spark Hive registration; optional boto3 Glue Data Catalog registration | Unity Catalog three-level names |
-| Bronze write | Partitioned Parquet overwrite | Same Parquet contract on S3 | Partitioned `saveAsTable` Delta overwrite |
-| Silver write | Deterministic partitioned Parquet overwrite | Same Parquet contract on S3 | First-load Delta create, then keyed SQL MERGE |
-| Gold write | Partitioned Parquet overwrite | Partitioned S3 Parquet overwrite | Partitioned managed Delta overwrite |
-| Optional Redshift publish | Disabled; no AWS credentials required | Dedicated unpartitioned S3 Parquet export, then Data API COPY/staging/MERGE when enabled | Disabled unless explicitly configured; not part of the live-validated Databricks workflow |
-| Orchestration | CLI daily/backfill | EMR step templates calling CLI | Three-task serverless Lakeflow Job |
-| File-manifest state | Atomic local checkpoint in dev | Checksummed S3 checkpoint in prod | Disabled by base profile; existing Delta workflow unchanged |
-| Validation status | Exercised with synthetic sample data | Artifacts/configuration only | Development bundle and workflow live-validated |
+| Concern | Local | Amazon EMR | AWS Glue Spark | Databricks |
+| --- | --- | --- | --- | --- |
+| Spark session | Package creates local session | Package configures YARN session | Adapter reuses Glue-managed session | Package reuses runtime-managed session |
+| Input storage | `data/sample` by dev default | Configured S3 paths | Configured S3 paths | Configured Unity Catalog Volume paths |
+| Table format | Parquet; dev-only JSON fallback for a specific Windows failure | Parquet | Parquet | Managed Delta |
+| Catalog behavior | Optional Spark Hive | Spark Hive; optional Glue Data Catalog | Optional Glue Data Catalog; Hive off by default | Unity Catalog three-level names |
+| Bronze/Silver/Gold | Shared partitioned Parquet ETL | Same ETL on S3 | Same ETL on S3 | Managed Delta, with Silver MERGE |
+| Optional Redshift publish | Disabled | Data API path when enabled | Same Data API path when enabled | Not part of validated workflow |
+| Orchestration | CLI daily/backfill | EMR step templates | Glue entrypoint invokes shared daily batch | Three-task serverless Lakeflow Job |
+| File-manifest state | Atomic local checkpoint in dev | Checksummed S3 checkpoint | Checksummed S3 checkpoint | Existing Delta workflow unchanged |
+| Validation status | Synthetic sample exercised | Artifacts/configuration only | Local fake-runtime and archive tests only | Earlier development bundle/workflow live-validated; current repairs not rerun |
+
+Spark shuffle/AQE settings, the bounded broadcast lookup, partition and
+small-file risks, benchmark schema, and the local smoke artifact are covered
+in the [scalability review](performance.md). That local artifact is not an
+EMR, Glue, S3 Parquet, or warehouse throughput result.
 
 ## Runtime configuration and resources
 
@@ -99,7 +114,10 @@ schemas, SQL, samples, or tests. Databricks bundle tasks therefore receive:
 - the synced `tests/data_quality` tree for the quality task.
 
 Local and EMR omit the bundle resource flags and retain repository-relative
-defaults. This prevents Databricks path repair from changing their behavior.
+defaults. Glue supplies a resource archive containing configuration and SQL;
+the adapter extracts it into a temporary directory and sets the resource base
+path. This prevents Glue and Databricks packaging from changing local or EMR
+behavior. See the [Glue deployment guide](../deploy/glue/README.md).
 
 ## Daily and backfill orchestration
 
@@ -322,7 +340,7 @@ shipment update. It is not used on local or EMR.
 ## Gold layer
 
 The Gold schema contains eight managed analytical tables on Databricks and the
-same logical outputs as Parquet on local/EMR:
+same logical outputs as Parquet on local/EMR/Glue:
 
 | Table | Grain | Responsibility |
 | --- | --- | --- |
@@ -342,7 +360,7 @@ business fields are documented rather than inferred.
 
 ## Publication and naming
 
-`publish.hive_writer.write_partitioned_table` dispatches local/EMR Parquet and
+`publish.hive_writer.write_partitioned_table` dispatches local/EMR/Glue Parquet and
 Databricks Bronze/Gold Delta writes. Its configured partition contract is
 `p_date`, `region_code`, and `carrier_id`; the writer derives or fills missing
 values. Databricks Silver is the deliberate exception: its managed targets are
@@ -560,12 +578,18 @@ published model, screenshot, or refresh schedule exists.
 
 ## Verified and unverified boundaries
 
+The [job alignment audit](job_alignment.md) maps each portfolio capability to
+source, tests, cloud evidence, and the remaining limitation.
+
 ### Verified or implemented
 
 - Local daily/backfill behavior with synthetic sample data.
 - Target-aware Parquet versus Delta publication logic.
 - Redshift SQL generation, Data API polling/orchestration, disabled behavior,
   and rerunnable load order with injected fake clients.
+- Glue Spark adapter and packaging, Glue Data Catalog registration, S3-backed
+  state/audit adapters, and CloudWatch emission with local fake-runtime or
+  fake-client tests. These are implemented paths, not live AWS validation.
 - Databricks development bundle validation, deployment, three-task workflow,
   managed-table queries, Silver MERGE, rerun uniqueness, Gold sanity, ML score
   validity, and the Lakeflow data-quality task.
@@ -577,6 +601,8 @@ published model, screenshot, or refresh schedule exists.
 - Live EMR execution.
 - Live Redshift schema bootstrap, authentication, S3 COPY, transactional
   MERGE, audit reconciliation, performance, or failure recovery.
+- Live Glue Spark execution, Glue Data Catalog registration, S3 state/audit
+  persistence, CloudWatch delivery, or an AWS performance benchmark.
 - Databricks production-target deployment or active scheduling.
 - Direct Gold-to-ML integration or a managed scoring table.
 - Full post-write Unity Catalog reconciliation in the Lakeflow quality task.

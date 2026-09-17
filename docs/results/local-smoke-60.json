@@ -1,0 +1,49 @@
+{
+  "audit_duration_seconds": 97.996128,
+  "batch_date": "2026-01-01",
+  "curated_rows": {
+    "agg_shipment_daily": 6,
+    "dim_carrier": 6,
+    "fct_delivery_event": 120,
+    "fct_shipment": 60,
+    "kpi_delivery_daily": 6
+  },
+  "elapsed_seconds": 105.509,
+  "environment": "dev",
+  "error_type": null,
+  "host_platform": "Windows-11-10.0.26200-SP0",
+  "input_rows": 186,
+  "input_rows_per_second": 1.763,
+  "measured_at_utc": "2026-09-17T02:53:26.279485+00:00",
+  "output_format": "json_fallback",
+  "output_row_scope": "five core Gold audit counts",
+  "output_rows": 198,
+  "python_version": "3.12.13",
+  "rejected_rows": 0,
+  "rejected_rows_by_entity": {
+    "carriers": 0,
+    "delivery_events": 0,
+    "shipments": 0
+  },
+  "run_id": "daily_2026-01-01_9a8d21f5",
+  "runtime_profile": "local",
+  "schema_version": 1,
+  "scope": "daily Spark ETL; pipeline state, cloud publishers, and Hive disabled",
+  "source_rows": {
+    "carriers": 6,
+    "delivery_events": 120,
+    "shipments": 60
+  },
+  "spark_configuration": {
+    "spark.sql.adaptive.coalescePartitions.enabled": "true",
+    "spark.sql.adaptive.enabled": "true",
+    "spark.sql.adaptive.skewJoin.enabled": "true",
+    "spark.sql.autoBroadcastJoinThreshold": "10485760b",
+    "spark.sql.parquet.compression.codec": "snappy",
+    "spark.sql.shuffle.partitions": "4",
+    "spark.sql.sources.partitionOverwriteMode": "dynamic"
+  },
+  "spark_version": "3.5.2",
+  "status": "success",
+  "synthetic_input": true
+}

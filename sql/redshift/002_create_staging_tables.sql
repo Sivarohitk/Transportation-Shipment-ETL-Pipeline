@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS {{staging_schema}}.dim_carrier (
     p_date DATE NOT NULL
 )
 DISTSTYLE AUTO
-SORTKEY (p_date, carrier_id);
+SORTKEY AUTO
+ENCODE AUTO;
 
 CREATE TABLE IF NOT EXISTS {{staging_schema}}.fct_shipment (
     shipment_id VARCHAR(128) NOT NULL,
@@ -39,7 +40,8 @@ CREATE TABLE IF NOT EXISTS {{staging_schema}}.fct_shipment (
     p_date DATE NOT NULL
 )
 DISTSTYLE AUTO
-SORTKEY (p_date, shipment_id);
+SORTKEY AUTO
+ENCODE AUTO;
 
 CREATE TABLE IF NOT EXISTS {{staging_schema}}.fct_delivery_event (
     event_id VARCHAR(128) NOT NULL,
@@ -60,7 +62,8 @@ CREATE TABLE IF NOT EXISTS {{staging_schema}}.fct_delivery_event (
     transit_time_hours DOUBLE PRECISION
 )
 DISTSTYLE AUTO
-SORTKEY (p_date, event_id);
+SORTKEY AUTO
+ENCODE AUTO;
 
 CREATE TABLE IF NOT EXISTS {{staging_schema}}.agg_shipment_daily (
     p_date DATE NOT NULL,
@@ -81,7 +84,8 @@ CREATE TABLE IF NOT EXISTS {{staging_schema}}.agg_shipment_daily (
     avg_cost_per_mile DOUBLE PRECISION
 )
 DISTSTYLE AUTO
-SORTKEY (p_date, region_code, carrier_id);
+SORTKEY AUTO
+ENCODE AUTO;
 
 CREATE TABLE IF NOT EXISTS {{staging_schema}}.kpi_delivery_daily (
     p_date DATE NOT NULL,
@@ -103,4 +107,5 @@ CREATE TABLE IF NOT EXISTS {{staging_schema}}.kpi_delivery_daily (
     total_delivery_events BIGINT
 )
 DISTSTYLE AUTO
-SORTKEY (p_date, region_code, carrier_id);
+SORTKEY AUTO
+ENCODE AUTO;

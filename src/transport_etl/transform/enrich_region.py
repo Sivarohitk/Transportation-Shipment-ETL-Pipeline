@@ -10,13 +10,11 @@ try:
     from pyspark.sql import DataFrame, SparkSession
     from pyspark.sql import functions as F
     from pyspark.sql import types as T
-    from pyspark.sql.window import Window
 except ModuleNotFoundError:  # pragma: no cover - allows non-Spark unit tests
     DataFrame = Any  # type: ignore[assignment]
     SparkSession = Any  # type: ignore[assignment]
     F = None  # type: ignore[assignment]
     T = None  # type: ignore[assignment]
-    Window = None  # type: ignore[assignment]
 
 from transport_etl.common.io import read_csv
 from transport_etl.transform.standardize import (
@@ -32,7 +30,7 @@ DEFAULT_REGION_LOOKUP_PATH = str(
 
 def _require_spark() -> None:
     """Ensure pyspark is available before executing Spark transformations."""
-    if F is None or T is None or Window is None:
+    if F is None or T is None:
         raise ImportError("pyspark is required for region enrichment transforms")
 
 
@@ -65,17 +63,13 @@ def prepare_region_lookup(region_lookup_df: DataFrame) -> DataFrame:
     normalized = normalize_state_code_values(region_lookup_df, columns=["state_code"])
     normalized = normalize_region_code_values(normalized, columns=["region_code"])
 
-    # Business decision: if duplicate state mappings exist, keep one stable mapping
-    # by selecting alphabetically smallest canonical region.
-    window = Window.partitionBy("state_code").orderBy(F.col("region_code").asc_nulls_last())
-    deduped = (
+    # Preserve the existing alphabetically smallest-region tie break without
+    # sorting every state partition through a window.
+    return (
         normalized.filter(F.col("state_code").isNotNull() & F.col("region_code").isNotNull())
-        .withColumn("__rn", F.row_number().over(window))
-        .filter(F.col("__rn") == 1)
-        .drop("__rn")
+        .groupBy("state_code")
+        .agg(F.min("region_code").alias("region_code"))
     )
-
-    return deduped
 
 
 def enrich_with_region(
@@ -103,7 +97,7 @@ def enrich_with_region(
     working = working.withColumn("__join_state", F.col(state_column))
 
     joined = working.join(
-        lookup,
+        F.broadcast(lookup),
         on=working["__join_state"] == lookup["__lookup_state"],
         how="left",
     )
